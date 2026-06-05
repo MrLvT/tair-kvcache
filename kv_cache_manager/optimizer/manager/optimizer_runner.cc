@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <limits>
 #include <stdexcept>
 #include <utility>
@@ -10,6 +11,7 @@
 #include "kv_cache_manager/common/logger.h"
 #include "kv_cache_manager/optimizer/config/optimizer_config.h"
 #include "kv_cache_manager/optimizer/manager/optimizer_loader.h"
+#include "kv_cache_manager/optimizer/trace_loader/standard_trace_loader.h"
 
 namespace kv_cache_manager {
 namespace {
@@ -47,6 +49,26 @@ void OptimizerRunner::Run(OptimizerConfig &config) {
     }
     pending_writes_ = {};
     next_pending_write_sequence_ = 0;
+
+    const char *stream_trace = std::getenv("KVCM_OPTIMIZER_STREAM_TRACE");
+    if (stream_trace != nullptr && std::string(stream_trace) != "0") {
+        auto starting_time = std::chrono::high_resolution_clock::now();
+        size_t trace_count = 0;
+        StandardTraceLoader::ForEachFromFile(
+            config.trace_file_path(), [this, &trace_count](const std::shared_ptr<OptimizerSchemaTrace> &trace) {
+                ReplayTraceWithPendingWrites(trace);
+                trace_count++;
+            });
+        FlushAllPendingWrites();
+        auto ending_time = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(ending_time - starting_time).count();
+        KVCM_LOG_INFO(
+            "Streamed and replayed %zu traces from file: %s in %ld ms",
+            trace_count,
+            config.trace_file_path().c_str(),
+            duration);
+        return;
+    }
 
     auto starting_time = std::chrono::high_resolution_clock::now();
     auto traces = OptimizerLoader::LoadTrace(config);

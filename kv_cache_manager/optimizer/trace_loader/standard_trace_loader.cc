@@ -11,6 +11,15 @@ namespace kv_cache_manager {
 std::vector<std::shared_ptr<OptimizerSchemaTrace>>
 StandardTraceLoader::LoadFromFile(const std::string &trace_file_path) {
     std::vector<std::shared_ptr<OptimizerSchemaTrace>> traces;
+    ForEachFromFile(trace_file_path, [&traces](const std::shared_ptr<OptimizerSchemaTrace> &trace) {
+        traces.push_back(trace);
+    });
+    return traces;
+}
+
+size_t StandardTraceLoader::ForEachFromFile(
+    const std::string &trace_file_path,
+    const std::function<void(const std::shared_ptr<OptimizerSchemaTrace> &)> &callback) {
     std::ifstream file(trace_file_path);
 
     if (!file.is_open()) {
@@ -20,6 +29,7 @@ StandardTraceLoader::LoadFromFile(const std::string &trace_file_path) {
 
     std::string line;
     int64_t line_number = 0;
+    size_t trace_count = 0;
     auto fail = [&](const std::string &message) {
         std::string full_message = trace_file_path + ":" + std::to_string(line_number) + ": " + message;
         KVCM_LOG_ERROR("%s", full_message.c_str());
@@ -86,7 +96,8 @@ StandardTraceLoader::LoadFromFile(const std::string &trace_file_path) {
         }
 
         if (trace && ValidateTrace(*trace)) {
-            traces.push_back(trace);
+            callback(trace);
+            trace_count++;
         } else {
             std::string line_preview = line.length() > 100 ? line.substr(0, 100) + "..." : line;
             fail("failed to validate trace: " + line_preview);
@@ -94,12 +105,12 @@ StandardTraceLoader::LoadFromFile(const std::string &trace_file_path) {
     }
 
     file.close();
-    if (traces.empty()) {
+    if (trace_count == 0) {
         KVCM_LOG_ERROR("No optimizer traces loaded from file: %s", trace_file_path.c_str());
         throw std::runtime_error("No optimizer traces loaded from file: " + trace_file_path);
     }
-    KVCM_LOG_INFO("Loaded %zu traces from file: %s", traces.size(), trace_file_path.c_str());
-    return traces;
+    KVCM_LOG_INFO("Loaded %zu traces from file: %s", trace_count, trace_file_path.c_str());
+    return trace_count;
 }
 
 bool StandardTraceLoader::ValidateTrace(const OptimizerSchemaTrace &trace) {
