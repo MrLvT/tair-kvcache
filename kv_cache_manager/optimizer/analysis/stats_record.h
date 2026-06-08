@@ -25,6 +25,14 @@ struct ReadRecord {
     size_t current_cache_blocks;
     size_t input_tokens = 0;
     size_t block_size_tokens = 0;
+    bool has_replay_timing = false;
+    int64_t arrival_timestamp_ns = 0;
+    int64_t start_timestamp_ns = 0;
+    int64_t finish_timestamp_ns = 0;
+    int64_t queue_delay_ns = 0;
+    int64_t service_time_ns = 0;
+    size_t simulated_hit_tokens = 0;
+    size_t simulated_missed_blocks = 0;
     std::vector<size_t> per_tier_hit_blocks; // per-tier hit block num, indexed by tier priority
     std::vector<std::string> tier_names;     // tier names for CSV column headers
     std::vector<size_t> per_tier_blocks;     // per-tier block num for current instance

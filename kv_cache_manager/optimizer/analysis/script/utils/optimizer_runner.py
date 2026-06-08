@@ -13,6 +13,8 @@ import gc
 import json
 import os
 import shutil
+import shlex
+import subprocess
 import sys
 import tempfile
 import threading
@@ -22,6 +24,26 @@ from typing import Dict, List, Optional, Tuple
 from kv_cache_manager.optimizer.pybind import kvcm_py_optimizer
 
 from .csv_loader import collect_instance_csvs, parse_instance_metrics
+
+
+def _compact_hit_metrics(metrics: dict) -> dict:
+    result = {
+        "total": metrics["acc_total_hit_rate"],
+        "local": metrics["acc_local_hit_rate"],
+        "remote": metrics["acc_remote_hit_rate"],
+        "cached_gb": metrics["cached_gb"],
+    }
+    for key in (
+        "input_tokens",
+        "hit_tokens",
+        "local_hit_tokens",
+        "remote_hit_tokens",
+        "acc_read_blocks",
+        "acc_hit_blocks",
+    ):
+        if key in metrics:
+            result[key] = metrics[key]
+    return result
 
 
 # ============================================================================
@@ -114,6 +136,18 @@ def run_optimizer_with_config_explicit(
     with open(temp_config_path, "w") as f:
         json.dump(config_json, f, indent=2)
 
+    producer = None
+    producer_err = None
+    fifo_path = None
+    producer_cmd = os.environ.get("KVCM_OPTIMIZER_TRACE_PRODUCER_CMD")
+    if producer_cmd:
+        fifo_path = os.path.join(temp_dir, "stream_trace.jsonl")
+        os.mkfifo(fifo_path)
+        config_json["trace_file_path"] = fifo_path
+        with open(temp_config_path, "w") as f:
+            json.dump(config_json, f, indent=2)
+        os.environ.setdefault("KVCM_OPTIMIZER_STREAM_TRACE", "1")
+
     config_loader = kvcm_py_optimizer.OptimizerConfigLoader()
     if not config_loader.load(temp_config_path):
         raise RuntimeError(f"Failed to load config: {temp_config_path}")
@@ -121,8 +155,28 @@ def run_optimizer_with_config_explicit(
 
     manager = kvcm_py_optimizer.OptimizerManager(config, enable_lifecycle_tracking, enable_template_analysis)
     manager.Init()
-    manager.DirectRun()
-    manager.AnalyzeResults()
+    try:
+        if producer_cmd:
+            producer_err_path = os.path.join(temp_dir, "trace_producer.stderr")
+            producer_err = open(producer_err_path, "w")
+            shell_cmd = f"{producer_cmd} > {shlex.quote(fifo_path)}"
+            producer = subprocess.Popen(shell_cmd, shell=True, stderr=producer_err)
+        manager.DirectRun()
+        if producer is not None:
+            ret = producer.wait()
+            if ret != 0:
+                raise RuntimeError(f"Trace producer failed with exit code {ret}")
+        manager.AnalyzeResults()
+    finally:
+        if producer is not None and producer.poll() is None:
+            producer.terminate()
+            try:
+                producer.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                producer.kill()
+                producer.wait()
+        if producer_err is not None:
+            producer_err.close()
 
     if save_csv_to:
         import glob
@@ -307,12 +361,7 @@ def warmup_pass_with_metrics(
             metrics = parse_instance_metrics(csv_file, bpb)
             if metrics is None:
                 continue
-            instance_metrics[iid] = {
-                "total": metrics["acc_total_hit_rate"],
-                "local": metrics["acc_local_hit_rate"],
-                "remote": metrics["acc_remote_hit_rate"],
-                "cached_gb": metrics["cached_gb"],
-            }
+            instance_metrics[iid] = _compact_hit_metrics(metrics)
 
         rep_bpb = next(iter(bytes_per_block_map.values()), 0)
         max_gb = max_blocks * rep_bpb / (1024 ** 3) if rep_bpb > 0 else 0
@@ -386,12 +435,7 @@ def run_single_experiment(
             metrics = parse_instance_metrics(csv_file, bpb)
             if metrics is None:
                 continue
-            instance_metrics[iid] = {
-                "total": metrics["acc_total_hit_rate"],
-                "local": metrics["acc_local_hit_rate"],
-                "remote": metrics["acc_remote_hit_rate"],
-                "cached_gb": metrics["cached_gb"],
-            }
+            instance_metrics[iid] = _compact_hit_metrics(metrics)
 
         result["instances"] = instance_metrics
         result["success"] = True

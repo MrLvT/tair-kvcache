@@ -229,7 +229,13 @@ def _get_python_include(repository_ctx, python_bin):
       [python_bin, "-c",
        'from __future__ import print_function;' +
        'import sysconfig;' +
-       'print(sysconfig.get_path("include"))'],
+       'import os\n' +
+       'include = sysconfig.get_path("include")\n' +
+       'if include and os.path.isdir(include):\n' +
+       '  print(include)\n' +
+       'else:\n' +
+       '  candidates = [sysconfig.get_config_var("INCLUDEPY"), sysconfig.get_config_var("CONFINCLUDEPY"), "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/Headers"]\n' +
+       '  print(next((path for path in candidates if path and os.path.isdir(path)), include))\n'],
       error_msg="Problem getting python include path.",
       error_details=("Is the Python binary path set up right? " +
                      "(See ./configure or " + _PYTHON_BIN_PATH + ".) " +
@@ -329,7 +335,7 @@ def _get_python_platform(rctx, python_bin):
     result = rctx.execute(check_cmd)
     if result.return_code != 0:
         rctx.report_progress("packaging not found; installing via pip...")
-        install_cmd = [python_bin, "-m", "pip", "install", "--quiet", "packaging==25.0"]
+        install_cmd = [python_bin, "-m", "pip", "install", "--quiet", "packaging<22"]
         install_result = rctx.execute(install_cmd)
         if install_result.return_code != 0:
             fail("Failed to install 'packaging': " + install_result.stderr)

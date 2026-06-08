@@ -100,7 +100,9 @@ void HitRateTracker::ExportHitRates(const std::string &instance_id,
     file << "TimestampNs,CachedBlocks,CachedBlocksAllInstances,ReadBlocks,LocalHitBlocks,RemoteHitBlocks,HitBlocks,"
             "InputTokens,LocalHitTokens,RemoteHitTokens,HitTokens,LocalHitRate,RemoteHitRate,HitRate,"
             "AccReadBlocks,AccHitBlocks,AccInputTokens,AccLocalHitTokens,AccRemoteHitTokens,AccHitTokens,"
-            "AccLocalHitRate,AccRemoteHitRate,AccHitRate,AccWriteBlocks";
+            "AccLocalHitRate,AccRemoteHitRate,AccHitRate,AccWriteBlocks,"
+            "ReplayHasTiming,ReplayArrivalNs,ReplayStartNs,ReplayFinishNs,ReplayQueueDelayNs,"
+            "ReplayServiceTimeNs,ReplaySimulatedHitTokens,ReplaySimulatedMissedBlocks,TraceId";
     if (has_tiered_data) {
         for (size_t t = 0; t < num_tiers; ++t) {
             const auto &name = tier_names[t];
@@ -164,7 +166,10 @@ void HitRateTracker::ExportHitRates(const std::string &instance_id,
              << (acc_input_tokens > 0 ? static_cast<double>(acc_local_hit_tokens) / acc_input_tokens : 0.0) << ","
              << (acc_input_tokens > 0 ? static_cast<double>(acc_remote_hit_tokens) / acc_input_tokens : 0.0) << ","
              << (acc_input_tokens > 0 ? static_cast<double>(acc_hit_tokens) / acc_input_tokens : 0.0) << ","
-             << acc_write_blocks;
+             << acc_write_blocks << "," << (r.has_replay_timing ? 1 : 0) << "," << r.arrival_timestamp_ns << ","
+             << r.start_timestamp_ns << "," << r.finish_timestamp_ns << "," << r.queue_delay_ns << ","
+             << r.service_time_ns << "," << r.simulated_hit_tokens << "," << r.simulated_missed_blocks << ","
+             << r.trace_id;
         if (has_tiered_data) {
             for (size_t t = 0; t < num_tiers; ++t) {
                 size_t hits = (t < r.per_tier_hit_blocks.size()) ? r.per_tier_hit_blocks[t] : 0;

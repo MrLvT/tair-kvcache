@@ -122,6 +122,19 @@ def parse_args():
     ttl_group.add_argument("--no-ttl-refresh-on-read", dest="ttl_refresh_on_read", action="store_false")
     parser.add_argument("--write-delay-ns", type=int, default=1,
                         help="Delay from request read timestamp to generated write timestamp for type=request traces")
+    parser.add_argument("--compute-base-latency-ns", type=int, default=None,
+                        help="Enable request compute-time replay with this base latency")
+    parser.add_argument("--compute-miss-block-latency-ns", type=int, default=0,
+                        help="Additional compute-time latency per simulated missed block")
+    parser.add_argument("--compute-miss-block-position-latency-ns", type=int, default=0,
+                        help="Additional compute-time latency per simulated missed block position")
+    parser.add_argument("--compute-latency-offset-ns", type=int, default=0,
+                        help="Fixed additive compute-time offset, useful for deterministic p90/p99 replay")
+    parser.add_argument("--compute-noise-offsets-ns", default="",
+                        help="Comma-separated sampled noise offsets in ns")
+    parser.add_argument("--compute-noise-weights", default="",
+                        help="Comma-separated sampled noise weights")
+    parser.add_argument("--compute-noise-seed", type=int, default=0)
 
     parser.add_argument("--aggregate-only", action="store_true",
                         help="Skip replay and aggregate existing hit_rates CSVs")
@@ -139,6 +152,15 @@ def parse_args():
         parser.error("--selective-write-threshold must be positive")
     if args.write_delay_ns <= 0:
         parser.error("--write-delay-ns must be positive")
+    for name in (
+        "compute_miss_block_latency_ns",
+        "compute_miss_block_position_latency_ns",
+        "compute_latency_offset_ns",
+        "compute_noise_seed",
+    ):
+        value = getattr(args, name)
+        if value is not None and value < 0:
+            parser.error(f"--{name.replace('_', '-')} must be non-negative")
     args.tier_flow_config = _parse_tier_flow_config_arg(parser, args.tier_flow_config)
     return args
 
@@ -463,7 +485,7 @@ def _make_single_instance_config(args, trace_file: str, output_dir: str, instanc
     if args.tier_flow_config:
         tier_strategy["tier_flows"] = args.tier_flow_config
 
-    return {
+    config = {
         "trace_file_path": trace_file,
         "output_result_path": output_dir,
         "eviction_params": {
@@ -494,6 +516,27 @@ def _make_single_instance_config(args, trace_file: str, output_dir: str, instanc
             }
         ],
     }
+    if args.compute_base_latency_ns is not None:
+        compute_time = {
+            "enabled": True,
+            "queue_by_instance_group": True,
+            "base_latency_ns": args.compute_base_latency_ns,
+            "miss_block_latency_ns": args.compute_miss_block_latency_ns,
+            "miss_block_position_latency_ns": args.compute_miss_block_position_latency_ns,
+            "latency_offset_ns": args.compute_latency_offset_ns,
+        }
+        noise_offsets = _parse_int_list(args.compute_noise_offsets_ns)
+        noise_weights = _parse_float_list(args.compute_noise_weights)
+        if noise_offsets and len(noise_offsets) != len(noise_weights):
+            raise SystemExit("--compute-noise-offsets-ns and --compute-noise-weights must have the same length")
+        if noise_weights and not noise_offsets:
+            raise SystemExit("--compute-noise-weights requires --compute-noise-offsets-ns")
+        if noise_offsets:
+            compute_time["noise_offsets_ns"] = noise_offsets
+            compute_time["noise_weights"] = noise_weights
+            compute_time["noise_seed"] = args.compute_noise_seed
+        config["trace_replay"]["compute_time"] = compute_time
+    return config
 
 
 def _resolve_policy_params(policy: str, override_json: str) -> dict:
@@ -512,6 +555,24 @@ def _resolve_policy_params(policy: str, override_json: str) -> dict:
         "sample_times": 32,
         "eviction_amplification_factor": 1.0,
     }
+
+
+def _parse_int_list(raw: str) -> list:
+    if not raw:
+        return []
+    values = [int(part.strip()) for part in raw.split(",") if part.strip()]
+    if any(value < 0 for value in values):
+        raise SystemExit("integer list values must be non-negative")
+    return values
+
+
+def _parse_float_list(raw: str) -> list:
+    if not raw:
+        return []
+    values = [float(part.strip()) for part in raw.split(",") if part.strip()]
+    if any(value < 0 for value in values) or sum(values) <= 0:
+        raise SystemExit("float list values must be non-negative and sum to a positive value")
+    return values
 
 
 def _resolve_window_ns(args) -> Optional[int]:

@@ -214,3 +214,130 @@ TEST_F(OptimizerManagerTest, RequestTraceSchedulesDelayedWrite) {
     EXPECT_EQ(data_it->second.write_records[1].timestamp_ns, 2500);
     EXPECT_EQ(data_it->second.write_records[2].timestamp_ns, 3000);
 }
+
+TEST_F(OptimizerManagerTest, RequestTraceComputeTimeQueuesByInstanceGroup) {
+    auto config = CreateTestOptimizerConfig();
+    config.set_trace_file_path(GetTestTempRootPath() + "/request_compute_trace.jsonl");
+    config.set_output_result_path(GetTestTempRootPath() + "/request_compute_result");
+
+    OptComputeTimeConfig compute_time_config;
+    compute_time_config.set_enabled(true);
+    compute_time_config.set_queue_by_instance_group(true);
+    compute_time_config.set_base_latency_ns(1000);
+    compute_time_config.set_miss_block_latency_ns(100);
+    OptTraceReplayConfig trace_replay_config;
+    trace_replay_config.set_compute_time_config(compute_time_config);
+    config.set_trace_replay_config(trace_replay_config);
+
+    auto groups = config.instance_groups();
+    ASSERT_EQ(groups.size(), 1);
+    auto group = groups[0];
+    group.set_quota_capacity(-1);
+    group.set_used_percentage(1.0);
+    auto instances = group.instances();
+    ASSERT_EQ(instances.size(), 1);
+    instances[0].set_block_size(16);
+    instances[0].set_bytes_per_token(1);
+    group.set_instances(instances);
+    config.set_instance_groups({group});
+
+    std::ofstream out(config.trace_file_path());
+    out << R"({"type":"request","instance_id":"instance1","trace_id":"r1","timestamp_ns":1000,"keys":[1],"input_len":16,"block_mask":[]})"
+        << "\n";
+    out << R"({"type":"request","instance_id":"instance1","trace_id":"r2","timestamp_ns":1500,"keys":[1],"input_len":16,"block_mask":[]})"
+        << "\n";
+    out << R"({"type":"request","instance_id":"instance1","trace_id":"r3","timestamp_ns":2000,"keys":[1],"input_len":16,"block_mask":[]})"
+        << "\n";
+    out.close();
+
+    OptimizerManager manager(config);
+    ASSERT_TRUE(manager.Init());
+    manager.DirectRun();
+
+    auto data_it = manager.hit_rate_tracker_->instance_data_.find("instance1");
+    ASSERT_NE(data_it, manager.hit_rate_tracker_->instance_data_.end());
+    ASSERT_EQ(data_it->second.read_records.size(), 3);
+    ASSERT_EQ(data_it->second.write_records.size(), 3);
+
+    EXPECT_EQ(data_it->second.read_records[0].timestamp_ns, 1000);
+    EXPECT_EQ(data_it->second.read_records[0].remote_hit_blocks, 0);
+    EXPECT_EQ(data_it->second.read_records[0].simulated_missed_blocks, 1);
+    EXPECT_EQ(data_it->second.read_records[0].service_time_ns, 1100);
+
+    EXPECT_EQ(data_it->second.read_records[1].timestamp_ns, 2100);
+    EXPECT_EQ(data_it->second.read_records[1].remote_hit_blocks, 1);
+    EXPECT_EQ(data_it->second.read_records[1].queue_delay_ns, 600);
+    EXPECT_EQ(data_it->second.read_records[1].simulated_missed_blocks, 0);
+
+    EXPECT_EQ(data_it->second.read_records[2].timestamp_ns, 3100);
+    EXPECT_EQ(data_it->second.read_records[2].remote_hit_blocks, 1);
+    EXPECT_EQ(data_it->second.read_records[2].queue_delay_ns, 1100);
+
+    EXPECT_EQ(data_it->second.write_records[0].timestamp_ns, 2100);
+    EXPECT_EQ(data_it->second.write_records[1].timestamp_ns, 3100);
+    EXPECT_EQ(data_it->second.write_records[2].timestamp_ns, 4100);
+}
+
+TEST_F(OptimizerManagerTest, RequestTraceComputeTimeUsesExecutionLanes) {
+    auto config = CreateTestOptimizerConfig();
+    config.set_trace_file_path(GetTestTempRootPath() + "/request_compute_divisor_trace.jsonl");
+    config.set_output_result_path(GetTestTempRootPath() + "/request_compute_divisor_result");
+
+    OptComputeTimeConfig compute_time_config;
+    compute_time_config.set_enabled(true);
+    compute_time_config.set_queue_by_instance_group(true);
+    compute_time_config.set_base_latency_ns(1000);
+    compute_time_config.set_miss_block_latency_ns(100);
+    compute_time_config.set_scheduler_lane_count(2);
+    OptTraceReplayConfig trace_replay_config;
+    trace_replay_config.set_compute_time_config(compute_time_config);
+    config.set_trace_replay_config(trace_replay_config);
+
+    auto groups = config.instance_groups();
+    ASSERT_EQ(groups.size(), 1);
+    auto group = groups[0];
+    group.set_quota_capacity(-1);
+    group.set_used_percentage(1.0);
+    auto instances = group.instances();
+    ASSERT_EQ(instances.size(), 1);
+    instances[0].set_block_size(16);
+    instances[0].set_bytes_per_token(1);
+    group.set_instances(instances);
+    config.set_instance_groups({group});
+
+    std::ofstream out(config.trace_file_path());
+    out << R"({"type":"request","instance_id":"instance1","trace_id":"r1","timestamp_ns":1000,"keys":[1],"input_len":16,"block_mask":[]})"
+        << "\n";
+    out << R"({"type":"request","instance_id":"instance1","trace_id":"r2","timestamp_ns":1500,"keys":[1],"input_len":16,"block_mask":[]})"
+        << "\n";
+    out << R"({"type":"request","instance_id":"instance1","trace_id":"r3","timestamp_ns":2000,"keys":[1],"input_len":16,"block_mask":[]})"
+        << "\n";
+    out.close();
+
+    OptimizerManager manager(config);
+    ASSERT_TRUE(manager.Init());
+    manager.DirectRun();
+
+    auto data_it = manager.hit_rate_tracker_->instance_data_.find("instance1");
+    ASSERT_NE(data_it, manager.hit_rate_tracker_->instance_data_.end());
+    ASSERT_EQ(data_it->second.read_records.size(), 3);
+    ASSERT_EQ(data_it->second.write_records.size(), 3);
+
+    EXPECT_EQ(data_it->second.read_records[0].timestamp_ns, 1000);
+    EXPECT_EQ(data_it->second.read_records[0].remote_hit_blocks, 0);
+    EXPECT_EQ(data_it->second.read_records[0].service_time_ns, 1100);
+
+    EXPECT_EQ(data_it->second.read_records[1].timestamp_ns, 1500);
+    EXPECT_EQ(data_it->second.read_records[1].queue_delay_ns, 0);
+    EXPECT_EQ(data_it->second.read_records[1].remote_hit_blocks, 0);
+    EXPECT_EQ(data_it->second.read_records[1].service_time_ns, 1100);
+
+    EXPECT_EQ(data_it->second.read_records[2].timestamp_ns, 2100);
+    EXPECT_EQ(data_it->second.read_records[2].queue_delay_ns, 100);
+    EXPECT_EQ(data_it->second.read_records[2].remote_hit_blocks, 1);
+    EXPECT_EQ(data_it->second.read_records[2].service_time_ns, 1000);
+
+    EXPECT_EQ(data_it->second.write_records[0].timestamp_ns, 2100);
+    EXPECT_EQ(data_it->second.write_records[1].timestamp_ns, 2600);
+    EXPECT_EQ(data_it->second.write_records[2].timestamp_ns, 3100);
+}

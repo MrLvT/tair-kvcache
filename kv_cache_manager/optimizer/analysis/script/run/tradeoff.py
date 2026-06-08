@@ -23,6 +23,7 @@ Applicability:
 """
 
 import argparse
+import json
 import os
 import sys
 from collections import defaultdict
@@ -44,6 +45,126 @@ from plot.hit_rate_plot import plot_multi_instance_analysis
 
 def _policy_name(policy):
     return policy or "default_policy"
+
+
+def _default_warmup_cache_path(output_dir):
+    return os.path.join(output_dir, "warmup_result.json")
+
+
+def _default_result_cache_path(output_dir):
+    return os.path.join(output_dir, "capacity_results.json")
+
+
+def _load_warmup_cache(path, policy_name):
+    if not path or not os.path.exists(path):
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+    policies = payload.get("policies", {})
+    warmup = policies.get(policy_name)
+    if warmup:
+        print("Loaded warmup cache for {} from {}".format(policy_name, path))
+    return warmup
+
+
+def _save_warmup_cache(path, policy_name, warmup, args, bytes_per_block_map=None):
+    if not path:
+        return
+    payload = {"policies": {}}
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except Exception as exc:
+            print("Warning: failed to read warmup cache {}: {}; overwriting".format(path, exc))
+    bytes_per_block = _representative_bytes_per_block(bytes_per_block_map or {})
+    payload.setdefault("policies", {})[policy_name] = {
+        "max_blocks": int(warmup["max_blocks"]),
+        "max_gb": int(warmup["max_blocks"]) * bytes_per_block / (1024 ** 3) if bytes_per_block > 0 else None,
+        "bytes_per_block": bytes_per_block,
+        "instances": warmup["instances"],
+        "num_points": args.num_points,
+        "min_capacity_ratio": args.min_capacity_ratio,
+    }
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, sort_keys=True)
+        f.write("\n")
+    os.replace(tmp_path, path)
+    print("Saved warmup cache for {} to {}".format(policy_name, path))
+
+
+def _load_result_cache(path):
+    if not path or not os.path.exists(path):
+        return {"policies": {}}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except Exception as exc:
+        print("Warning: failed to read result cache {}: {}".format(path, exc))
+        return {"policies": {}}
+    payload.setdefault("policies", {})
+    return payload
+
+
+def _save_capacity_result(path, policy_name, result):
+    if not path:
+        return
+    payload = _load_result_cache(path)
+    policy_results = payload.setdefault("policies", {}).setdefault(policy_name, {})
+    policy_results[str(result["capacity"])] = result
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, sort_keys=True)
+        f.write("\n")
+    os.replace(tmp_path, path)
+    print("  checkpoint: saved {} capacity={} to {}".format(policy_name, result["capacity"], path))
+
+
+def _representative_bytes_per_block(bytes_per_block_map):
+    return next((int(v) for v in bytes_per_block_map.values() if int(v) > 0), 0)
+
+
+def _annotate_capacity_units(result, bytes_per_block_map):
+    bpb = _representative_bytes_per_block(bytes_per_block_map)
+    result.setdefault("capacity_blocks", int(result["capacity"]))
+    result["bytes_per_block"] = bpb
+    if bpb > 0:
+        result["capacity_gb"] = int(result["capacity"]) * bpb / (1024 ** 3)
+    return result
+
+
+def _capacity_csv_dir(csv_save_dir, capacity, policy_name):
+    return os.path.join(csv_save_dir, "cap_{}_{}".format(capacity, policy_name))
+
+
+def _existing_capacity_result(csv_save_dir, capacity, policy_name, bytes_per_block_map):
+    from utils.csv_loader import collect_instance_csvs, parse_instance_metrics
+
+    cap_dir = _capacity_csv_dir(csv_save_dir, capacity, policy_name)
+    csv_map = collect_instance_csvs(cap_dir)
+    if not csv_map:
+        return None
+    instances = {}
+    for iid, csv_file in csv_map.items():
+        bpb = bytes_per_block_map.get(iid, 0)
+        metrics = parse_instance_metrics(csv_file, bpb)
+        if metrics is None:
+            continue
+        instances[iid] = {
+            "total": metrics["acc_total_hit_rate"],
+            "local": metrics["acc_local_hit_rate"],
+            "remote": metrics["acc_remote_hit_rate"],
+            "cached_gb": metrics["cached_gb"],
+        }
+        for key in ("input_tokens", "hit_tokens", "local_hit_tokens", "remote_hit_tokens"):
+            if key in metrics:
+                instances[iid][key] = metrics[key]
+    if not instances:
+        return None
+    return {"capacity": capacity, "instances": instances}
 
 
 def _result_reaches_theoretical_target(result, theoretical_instances, hit_rate_type, ratio=0.99):
@@ -74,8 +195,32 @@ def _run_policy_until_target(
     results = []
     batch_size = max(1, args.max_workers)
     csv_dir_arg = csv_save_dir if args.save_csv else None
+    result_cache = _load_result_cache(args.result_cache) if args.resume_existing else {"policies": {}}
+    cached_policy_results = result_cache.get("policies", {}).get(policy_name, {})
     for start in range(0, len(capacities), batch_size):
-        batch = capacities[start:start + batch_size]
+        batch = []
+        for cap in capacities[start:start + batch_size]:
+            cached = cached_policy_results.get(str(cap))
+            if args.resume_existing and cached is not None:
+                print("  resume: loaded checkpoint {} capacity={}".format(policy_name, cap))
+                results.append(_annotate_capacity_units(cached, bytes_per_block_map))
+                continue
+            if args.resume_existing and args.save_csv:
+                existing = _existing_capacity_result(csv_save_dir, cap, policy_name, bytes_per_block_map)
+                if existing is not None:
+                    print("  resume: loaded existing {} capacity={}".format(policy_name, cap))
+                    results.append(_annotate_capacity_units(existing, bytes_per_block_map))
+                    continue
+            batch.append(cap)
+        if not batch:
+            if not args.no_early_stop and results and _result_reaches_theoretical_target(
+                {"success": True, "instances": results[-1]["instances"]},
+                theoretical_instances,
+                hit_rate_type,
+                ratio=0.99,
+            ):
+                break
+            continue
         raw_results = run_experiments_parallel(
             args.config,
             [(cap, policy) for cap in batch],
@@ -87,18 +232,26 @@ def _run_policy_until_target(
             if not raw.get("success"):
                 print("  tradeoff failed capacity={}: {}".format(raw.get("capacity"), raw.get("error")))
                 continue
-            results.append({
+            point = {
                 "capacity": raw["capacity"],
                 "instances": raw["instances"],
-            })
-            if _result_reaches_theoretical_target(raw, theoretical_instances, hit_rate_type, ratio=0.99):
+            }
+            point = _annotate_capacity_units(point, bytes_per_block_map)
+            results.append(point)
+            _save_capacity_result(args.result_cache, policy_name, point)
+            if not args.no_early_stop and _result_reaches_theoretical_target(
+                {"success": True, "instances": point["instances"]},
+                theoretical_instances,
+                hit_rate_type,
+                ratio=0.99,
+            ):
                 print(
                     "{} reached 99% theoretical {} hit rate at capacity={}".format(
-                        policy_name, hit_rate_type, raw["capacity"]
+                        policy_name, hit_rate_type, point["capacity"]
                     )
                 )
                 break
-        if results and _result_reaches_theoretical_target(
+        if not args.no_early_stop and results and _result_reaches_theoretical_target(
             {"success": True, "instances": results[-1]["instances"]},
             theoretical_instances,
             hit_rate_type,
@@ -216,14 +369,26 @@ def main():
     parser.add_argument("--eviction-policies", nargs="+", default=None,
                         help="驱逐策略列表（不指定则使用配置中的默认策略）")
     parser.add_argument("--num-points", type=int, default=30,
-                        help="Maximum capacity points before early stopping at 99% theoretical hit rate")
+                        help="Maximum capacity points before early stopping at 99%% theoretical hit rate")
     parser.add_argument("--min-capacity-ratio", type=float, default=1e-4,
                         help="Relative lower bound for generated capacity points, as a ratio of max cached blocks")
+    parser.add_argument("--capacity-points", type=int, nargs="+", default=None,
+                        help="Explicit capacity points in blocks; preserves the provided run order")
+    parser.add_argument("--no-early-stop", action="store_true",
+                        help="Run every generated/explicit capacity point instead of stopping at 99%% theoretical hit rate")
     parser.add_argument("--hit-rate-type", default="total",
                         choices=["total", "local", "remote", "all"])
     parser.add_argument("--max-workers", type=int, default=4)
     parser.add_argument("--save-csv", action="store_true",
                         help="保留每次运行的 CSV 文件")
+    parser.add_argument("--resume-existing", action="store_true",
+                        help="跳过并加载 --save-csv 已经完成的 cap_<capacity>_<policy> 目录")
+    parser.add_argument("--warmup-cache", default=None,
+                        help="Warmup 结果 JSON 路径；存在则复用，缺失则 warmup 完整结束后写入")
+    parser.add_argument("--result-cache", default=None,
+                        help="Capacity sweep 结果 JSON 路径；每个成功 capacity 点完成后写入")
+    parser.add_argument("--force-warmup", action="store_true",
+                        help="忽略已有 --warmup-cache，重新执行 warmup 并覆盖缓存")
     parser.add_argument("--skip-run", action="store_true",
                         help="跳过实验，从已有 CSV 目录加载数据")
     parser.add_argument("--plot-timeseries", action="store_true",
@@ -282,6 +447,8 @@ def main():
 
     output_dir = config.output_result_path()
     csv_save_dir = os.path.join(config.output_result_path(), "csv_results")
+    warmup_cache_path = args.warmup_cache or _default_warmup_cache_path(output_dir)
+    args.result_cache = args.result_cache or _default_result_cache_path(output_dir)
     theoretical_by_policy = {}
 
     # ----------------------------------------------------------------
@@ -312,14 +479,23 @@ def main():
             print("\n" + "=" * 60)
             print("Warmup and capacity sweep: {}".format(policy_name))
             print("=" * 60)
-            warmup = warmup_pass_with_metrics(args.config, -1, bytes_per_block_map, policy)
+            warmup = None if args.force_warmup else _load_warmup_cache(warmup_cache_path, policy_name)
+            if warmup is None:
+                warmup = warmup_pass_with_metrics(args.config, -1, bytes_per_block_map, policy)
+                _save_warmup_cache(warmup_cache_path, policy_name, warmup, args, bytes_per_block_map)
             theoretical_by_policy[policy_name] = warmup["instances"]
             max_blocks = int(warmup["max_blocks"])
-            capacities = generate_capacity_list(
-                max_blocks, args.num_points, min_capacity_ratio=args.min_capacity_ratio)
-            if max_blocks not in capacities:
-                capacities.append(max_blocks)
-            capacities = sorted(set(capacities))
+            if args.capacity_points:
+                capacities = [cap for cap in args.capacity_points if cap > 0]
+            else:
+                capacities = generate_capacity_list(
+                    max_blocks, args.num_points, min_capacity_ratio=args.min_capacity_ratio)
+                if max_blocks not in capacities:
+                    capacities.append(max_blocks)
+            if args.capacity_points:
+                capacities = list(dict.fromkeys(capacities))
+            else:
+                capacities = sorted(set(capacities))
             if not capacities:
                 print("Error: No valid capacity points generated (max_blocks={})".format(max_blocks))
                 sys.exit(1)

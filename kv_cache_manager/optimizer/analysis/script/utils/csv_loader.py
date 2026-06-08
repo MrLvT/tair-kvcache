@@ -73,6 +73,17 @@ def parse_instance_metrics(csv_file: str, bytes_per_block: int) -> Optional[dict
         "cached_blocks_all": cached_blocks_all,
         "cached_gb": cached_blocks_all * bytes_per_block / (1024 ** 3) if bytes_per_block > 0 else 0,
     }
+    optional_counters = {
+        "AccReadBlocks": "acc_read_blocks",
+        "AccHitBlocks": "acc_hit_blocks",
+        "AccInputTokens": "input_tokens",
+        "AccLocalHitTokens": "local_hit_tokens",
+        "AccRemoteHitTokens": "remote_hit_tokens",
+        "AccHitTokens": "hit_tokens",
+    }
+    for csv_col, metric_key in optional_counters.items():
+        if csv_col in df.columns:
+            result[metric_key] = int(last[csv_col])
     
     # 解析 per-tier 数据
     tier_names = []
@@ -133,13 +144,25 @@ def _read_hit_rates_from_csv(csv_path: str, bytes_per_block: int) -> Optional[di
             raise ValueError(f"missing columns: {missing}")
 
         cached_all = int(last["CachedBlocksAllInstances"])
-        return {
+        result = {
             "total": float(last["AccHitRate"]),
             "local": float(last["AccLocalHitRate"]),
             "remote": float(last["AccRemoteHitRate"]),
             "cached_blocks_all": cached_all,
             "cached_gb": cached_all * bytes_per_block / (1024 ** 3) if bytes_per_block > 0 else 0,
         }
+        optional_counters = {
+            "AccReadBlocks": "acc_read_blocks",
+            "AccHitBlocks": "acc_hit_blocks",
+            "AccInputTokens": "input_tokens",
+            "AccLocalHitTokens": "local_hit_tokens",
+            "AccRemoteHitTokens": "remote_hit_tokens",
+            "AccHitTokens": "hit_tokens",
+        }
+        for csv_col, metric_key in optional_counters.items():
+            if csv_col in df.columns:
+                result[metric_key] = int(last[csv_col])
+        return result
     except Exception as e:
         print(f"  Warning: Failed to read {csv_path}: {e}")
         return None

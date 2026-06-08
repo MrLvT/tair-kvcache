@@ -43,6 +43,15 @@ py_library(
     imports = ["."],
 )
 
+py_library(
+    name = "deepseek_trace_lib",
+    srcs = [
+        "run/__init__.py",
+        "run/prepare_deepseek_trace.py",
+    ],
+    imports = ["run"],
+)
+
 # =========================================================================
 # 入口二进制
 # =========================================================================
@@ -61,6 +70,56 @@ py_binary(
     srcs = ["run/tradeoff.py"],
     main = "run/tradeoff.py",
     deps = [":utils_lib", ":plot_lib"],
+)
+
+# DeepSeek enriched JSONL preparation for optimizer replay.
+py_binary(
+    name = "prepare_deepseek_trace",
+    srcs = ["run/prepare_deepseek_trace.py"],
+    main = "run/prepare_deepseek_trace.py",
+)
+
+py_binary(
+    name = "prepare_deepseek_stream_config",
+    srcs = [
+        "run/prepare_deepseek_stream_config.py",
+    ],
+    main = "run/prepare_deepseek_stream_config.py",
+    deps = [":deepseek_trace_lib"],
+)
+
+py_binary(
+    name = "split_deepseek_trace_by_service",
+    srcs = [
+        "run/split_deepseek_trace_by_service.py",
+    ],
+    main = "run/split_deepseek_trace_by_service.py",
+    deps = [":deepseek_trace_lib"],
+)
+
+py_binary(
+    name = "stream_deepseek_optimizer_trace",
+    srcs = [
+        "run/stream_deepseek_optimizer_trace.py",
+    ],
+    main = "run/stream_deepseek_optimizer_trace.py",
+    deps = [":deepseek_trace_lib"],
+)
+
+py_binary(
+    name = "compare_prefill_latency",
+    srcs = [
+        "run/compare_prefill_latency.py",
+    ],
+    main = "run/compare_prefill_latency.py",
+)
+
+py_binary(
+    name = "analyze_prefill_formula",
+    srcs = [
+        "run/analyze_prefill_formula.py",
+    ],
+    main = "run/analyze_prefill_formula.py",
 )
 
 # RadixTree 导出 + 可视化
