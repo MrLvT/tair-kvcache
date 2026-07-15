@@ -19,6 +19,8 @@ hierarchical 写 storage pool 时，三种策略都以 engine pool-source 层为
 
 hierarchical 读 engine-local 时按 `infer_clusters[].engine_read_query_type` 查询；配置 P2P 后，在 engine-local 和 storage pool 之间按 `p2p_read_flows` 查询同集群 peer。完整 `keys` 仍会传给 storage pool：`prefix_match` 下，engine/P2P 已命中的 index 不计入 pool hit，但允许 prefix 继续向后匹配，直到某个 block 在 engine、P2P 和 pool 都未命中；`batch_get` 下，storage pool 也逐 block 独立查询。
 
+`capacity_miss_metric` 是 hierarchical replay 的可选配置，默认关闭。默认使用 `window_seconds=300` 和 `ghost_retention_seconds=1800`，并要求 ghost retention 不短于统计窗口；engine 和 storage pool 的默认 TTL 均须为 0，trace 也不能携带正的请求级 TTL。指标以 `storage_pool_id` 为模型/路由 scope，因此 block key 必须已经包含模型版本隔离语义。`cacheable_prompt_tokens` 只统计完整 block，即 `keys.size() * block_size`。
+
 标准 `optimizer_run` 也支持顶层可选 `mamba_state`，用于紧急估算无限容量全局池化下的 Mamba/Linear state 影响。当前实现是轻量版本：不建本地/P2P/pool 拆分，不把 Mamba state 建模成完整 component-aware tier，也不模拟 Mamba state 的容量、驱逐和跨 tier 流转。它只在同一个全局 optimizer instance 上维护稀疏 state checkpoint：每次写入时，为请求的第 `chunk_size_blocks`、`2 * chunk_size_blocks` ... 个完整 block，以及 request 结尾 block 写入 checkpoint；request 结尾 checkpoint 固定开启，不提供关闭参数。读取时先按原 KV 逻辑得到 raw KV 连续前缀，再取不超过该前缀的最长已存在 checkpoint 作为最终 `HitBlocks` / `HitRate`。这条路径适合 `optimizer_run` 的单实例超大容量配置和快速粗估，不表示最终完整模拟方案。后续完整版本应把 Mamba state 作为 KV block 上方的 component 维度纳入统一 replay 语义，并补齐容量、驱逐、tier/pool/P2P 交互和统计口径。
 
 示例：

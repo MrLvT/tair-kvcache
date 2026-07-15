@@ -72,6 +72,7 @@ public:
 
     // 导出前缀树用于可视化
     std::unordered_map<std::string, RadixTreeIndex::RadixTreeExport> ExportRadixTrees() const;
+    std::vector<int64_t> SnapshotLiveKeys(const std::string &instance_id) const;
 
     // 清空指定实例的缓存（不重置统计结果）
     bool ClearCache(const std::string &instance_id);

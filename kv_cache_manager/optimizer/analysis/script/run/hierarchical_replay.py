@@ -405,6 +405,10 @@ def main():
     else:
         print(f"  (no combined CSV found at {combined_csv})")
 
+    capacity_miss_csv = os.path.join(output_dir, "combined", "hierarchical_capacity_miss.csv")
+    if os.path.isfile(capacity_miss_csv):
+        _print_capacity_miss_summary(capacity_miss_csv)
+
     total_elapsed = time.time() - start_time
     print(f"\nTotal time: {total_elapsed:.2f}s")
 
@@ -449,6 +453,34 @@ def _print_hit_rate_summary(csv_path: str):
     print(f"    Local:      {total_local_hit:,}  ({total_local_hit / total_read:.4%})")
     print(f"    Peer:       {total_peer_hit:,}  ({total_peer_hit / total_read:.4%})")
     print(f"    Remote:     {total_remote_hit:,}  ({total_remote_hit / total_read:.4%})")
+    print("=" * 70)
+
+
+def _print_capacity_miss_summary(csv_path: str):
+    """Print cumulative counters and the last complete capacity-miss window."""
+    import csv as csv_mod
+
+    last_row = None
+    last_window_row = None
+    with open(csv_path, "r") as f:
+        for row in csv_mod.DictReader(f):
+            last_row = row
+            if row.get("CapacityMissTps5m", "") != "":
+                last_window_row = row
+    if last_row is None:
+        return
+
+    print("\n" + "=" * 70)
+    print("  Capacity Miss Summary")
+    print("=" * 70)
+    print(f"  Capacity miss tokens: {int(last_row['AccCapacityMissTokens']):,}")
+    print(f"  Routing miss tokens:  {int(last_row['AccRoutingMissTokens']):,}")
+    print(f"  Cold miss tokens:     {int(last_row['AccColdMissTokens']):,}")
+    if last_window_row is not None:
+        print(f"  Capacity miss TPS:    {float(last_window_row['CapacityMissTps5m']):,.2f}")
+        print(f"  Capacity miss ratio:  {float(last_window_row['CapacityMissRatio5m']):.4%}")
+    else:
+        print("  Capacity miss TPS:    unavailable (trace covers less than one full window)")
     print("=" * 70)
 
 

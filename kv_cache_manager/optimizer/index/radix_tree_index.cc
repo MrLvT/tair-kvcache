@@ -1102,6 +1102,17 @@ void RadixTreeIndex::Clear() {
     root_ = std::make_unique<RadixTreeNode>();
 }
 
+std::vector<int64_t> RadixTreeIndex::LiveKeys() const {
+    std::vector<int64_t> keys;
+    keys.reserve(block_index_.size());
+    for (const auto &[key, block] : block_index_) {
+        if (block != nullptr && !block->location_map.empty()) {
+            keys.push_back(key);
+        }
+    }
+    return keys;
+}
+
 void RadixTreeIndex::ClearAt(int64_t timestamp) {
     if (stats_collector_) {
         for (const auto &[_, block] : block_index_) {

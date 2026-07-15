@@ -41,12 +41,14 @@ bazel run //kv_cache_manager/optimizer:hierarchical_replay_main -- /path/to/hier
 - combined 统计中 `LocalHit*` 表示 engine 本地命中，`PeerHit*` 表示同集群 peer 命中，`RemoteHit*` 表示 storage pool 命中，`Hit* = LocalHit* + PeerHit* + RemoteHit*`。未开启 P2P 时 `PeerHit*` 为 0。
 - `enable_lifecycle_tracking=true` 时，engine manager 和 storage pool manager 都会导出各自 instance 的 `*_lifecycle.csv`；默认关闭，避免大 trace 下额外内存开销。
 - `enable_cache_retention_tracking=true` 时按物理淘汰发生分钟输出 cache retention。每个 `infer_clusters[]` 必须配置非空 `service_name`；同一个 storage pool 不能映射到多个 service。
+- `capacity_miss_metric.enabled=true` 时启用扩缩容指标回放。第一版维护 engine/storage pool Live Directory，并只为最后一个副本因容量淘汰或 `cache_drop_event_file` 缩容事件消失的 block 保留 Ghost。业务默认 TTL 和请求级 TTL 必须关闭。
 
 输出：
 
 - `output_result_path/hierarchical_hit_rates.csv`：端到端 combined 结果，包含 `LocalHitBlocks` / `PeerHitBlocks` / `RemoteHitBlocks` / `HitBlocks`、对应 token 字段、当前与累计 token hit rate。
 - `output_result_path/hierarchical_read_io.csv`：读侧 IO 结果。`PeerTransferTokens` / `PoolTransferTokens` 只统计真正从 peer / storage pool 迁移回当前推理实例的 token；`PeerSourceInferId` 表示本次 P2P 读取来源；`LocalReadTokens` 是本地 cache 命中的读取量，不是跨实例或跨 pool 迁移。
 - `output_result_path/hierarchical_pool_write_io.csv`：写入 storage pool 的 IO 结果。`PoolWriteTokens` 只统计真实新增写入 pool 的 token；`PoolExistingTokens` 表示写入时 pool 已有副本的 token，不计入新增写入带宽。
+- `output_result_path/hierarchical_capacity_miss.csv`：仅在 capacity miss metric 开启时输出。包含请求级 `ActualPrefixTokens`、`GlobalPrefixTokens`、`CounterfactualPrefixTokens`、Routing/Capacity/Cold miss tokens、累计 counter，以及完整五分钟窗口的 `CapacityMissTps5m` / `CapacityMissRatio5m`。窗口未覆盖满五分钟时对应字段为空。
 - `output_result_path/infer/`：推理侧独立统计，用于分析每个推理实例本地缓存；开启 `enable_lifecycle_tracking` 后也会输出 `*_lifecycle.csv`。
 - `storage_pool.output_result_path`：storage pool 侧独立统计，用于分析 KVCM/storage pool 池化层；开启 `enable_lifecycle_tracking` 后也会输出 `*_lifecycle.csv`。
 - 开启 retention 后，engine 和 pool 目录分别输出 `<instance>_cache_retention_by_minute.csv` 与 `service_<service>_cache_retention_by_minute.csv`。service 分位数直接由所有 instance 的原始淘汰样本合并计算，不是 instance 分位数的平均。
@@ -62,6 +64,11 @@ bazel run //kv_cache_manager/optimizer:hierarchical_replay_main -- /path/to/hier
   "infer_active_windows_from_trace": false,
   "enable_lifecycle_tracking": false,
   "enable_cache_retention_tracking": false,
+  "capacity_miss_metric": {
+    "enabled": true,
+    "ghost_retention_seconds": 1800,
+    "window_seconds": 300
+  },
   "infer_eviction_params": {
     "eviction_mode": 3,
     "eviction_batch_size_per_instance": 100

@@ -10,6 +10,7 @@
 
 #include "kv_cache_manager/optimizer/config/hierarchical_replay_config.h"
 #include "kv_cache_manager/optimizer/config/insight_simulator_types.h"
+#include "kv_cache_manager/optimizer/analysis/tracker/capacity_miss_tracker.h"
 #include "kv_cache_manager/optimizer/manager/optimizer_manager.h"
 #include "kv_cache_manager/optimizer/p2p/tier_global_tracker.h"
 #include "kv_cache_manager/optimizer/scheduler/infer_engine_scheduler.h"
@@ -24,6 +25,12 @@ struct HierarchicalGetCacheLocationRes {
     int64_t peer_hit_length = 0;
     int64_t storage_pool_hit_length = 0;
     int64_t total_hit_length = 0;
+    int64_t actual_prefix_tokens = 0;
+    int64_t global_prefix_tokens = 0;
+    int64_t counterfactual_prefix_tokens = 0;
+    int64_t routing_miss_tokens = 0;
+    int64_t capacity_miss_tokens = 0;
+    int64_t cold_miss_tokens = 0;
 };
 
 class HierarchicalReplayManager {
@@ -131,6 +138,7 @@ private:
     const std::vector<std::string> &InferIdsForCluster(const std::string &cluster_id) const;
     const std::vector<P2PReadFlowConfig> &P2PReadFlowsForCluster(const std::string &cluster_id) const;
     void ApplyEngineTierEvents(const std::vector<TierFlowKeyEvent> &events);
+    void ApplyStoragePoolPresenceEvents(const std::vector<CachePresenceEvent> &events);
     void FillEngineFromHitIndices(const std::string &engine_instance_id,
                                   const std::string &storage_pool_id,
                                   const std::string &trace_id,
@@ -191,6 +199,7 @@ private:
     std::unordered_map<std::string, size_t> engine_block_size_;
     InferEngineScheduler infer_engine_scheduler_;
     TierGlobalTracker p2p_tracker_;
+    std::unique_ptr<CapacityMissTracker> capacity_miss_tracker_;
     std::vector<CombinedReadRecord> combined_read_records_;
     std::vector<CombinedWriteRecord> combined_write_records_;
     std::vector<PoolWriteIoRecord> pool_write_io_records_;

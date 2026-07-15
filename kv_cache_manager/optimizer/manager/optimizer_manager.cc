@@ -398,6 +398,14 @@ std::unordered_map<std::string, RadixTreeIndex::RadixTreeExport> OptimizerManage
     return export_data;
 }
 
+std::vector<int64_t> OptimizerManager::SnapshotLiveKeys(const std::string &instance_id) const {
+    if (!indexer_manager_) {
+        return {};
+    }
+    auto indexer = indexer_manager_->GetOptIndexer(instance_id);
+    return indexer ? indexer->LiveKeys() : std::vector<int64_t>{};
+}
+
 bool OptimizerManager::ClearCache(const std::string &instance_id) {
     if (!indexer_manager_) {
         KVCM_LOG_ERROR("Indexer manager not initialized");

@@ -21,6 +21,7 @@ namespace kv_cache_manager {
 struct HashStoragePoolReadResult {
     size_t hit_blocks = 0;
     std::vector<size_t> hit_indices;
+    std::vector<CachePresenceEvent> presence_events;
 };
 
 struct HashStoragePoolReadRequest {
@@ -103,8 +104,11 @@ private:
                     bool count_read,
                     bool refresh_ttl,
                     bool count_write_touch);
-    void
-    RemoveBlock(PoolInstance &instance, BlockEntry *block, int64_t timestamp, bool use_logical_expire_time = false);
+    void RemoveBlock(PoolInstance &instance,
+                     BlockEntry *block,
+                     int64_t timestamp,
+                     CachePresenceRemovalReason reason,
+                     bool use_logical_expire_time = false);
     void EvictExpiredForGroup(const std::string &group_name, int64_t timestamp);
     void EvictExpiredForInstance(PoolInstance &instance, int64_t timestamp);
     void CheckAndEvict(const std::string &instance_id, int64_t timestamp);
@@ -134,6 +138,7 @@ private:
     std::shared_ptr<StatsCollector> stats_collector_;
     std::unordered_map<std::string, PoolGroup> groups_;
     std::unordered_map<std::string, PoolInstance> instances_;
+    std::vector<CachePresenceEvent> current_presence_events_;
 };
 
 } // namespace kv_cache_manager

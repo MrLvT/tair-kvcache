@@ -1,6 +1,15 @@
 package(default_visibility = ["//visibility:private"])
 
 cc_test(
+    name = "CapacityMissTrackerTest",
+    srcs = ["capacity_miss_tracker_test.cc"],
+    deps = [
+        "//kv_cache_manager/common:unittest",
+        "//kv_cache_manager/optimizer/analysis/tracker",
+    ],
+)
+
+cc_test(
     name = "CacheRetentionTrackerTest",
     srcs = ["cache_retention_tracker_test.cc"],
     deps = [

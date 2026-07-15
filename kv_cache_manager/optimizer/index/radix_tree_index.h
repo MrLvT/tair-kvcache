@@ -109,6 +109,7 @@ public:
     RadixTreeExport ExportForVisualization() const;
 
     const RadixTreeNode *GetRoot() const { return root_.get(); }
+    std::vector<int64_t> LiveKeys() const;
     bool ConsumeReadTriggeredTierWrite() {
         bool triggered = read_triggered_tier_write_;
         read_triggered_tier_write_ = false;

@@ -240,6 +240,25 @@ private:
     StoragePoolFlowConfig storage_pool_flow_;
 };
 
+class CapacityMissMetricConfig : public Jsonizable {
+public:
+    bool FromRapidValue(const rapidjson::Value &rapid_value) override;
+    void ToRapidWriter(rapidjson::Writer<rapidjson::StringBuffer> &writer) const noexcept override;
+
+    [[nodiscard]] bool enabled() const { return enabled_; }
+    [[nodiscard]] int64_t ghost_retention_seconds() const { return ghost_retention_seconds_; }
+    [[nodiscard]] int64_t window_seconds() const { return window_seconds_; }
+
+    void set_enabled(bool enabled) { enabled_ = enabled; }
+    void set_ghost_retention_seconds(int64_t seconds) { ghost_retention_seconds_ = seconds; }
+    void set_window_seconds(int64_t seconds) { window_seconds_ = seconds; }
+
+private:
+    bool enabled_ = false;
+    int64_t ghost_retention_seconds_ = 1800;
+    int64_t window_seconds_ = 300;
+};
+
 class HierarchicalReplayConfig : public Jsonizable {
 public:
     HierarchicalReplayConfig() = default;
@@ -263,6 +282,7 @@ public:
     [[nodiscard]] bool enable_lifecycle_tracking() const { return enable_lifecycle_tracking_; }
     [[nodiscard]] bool enable_cache_retention_tracking() const { return enable_cache_retention_tracking_; }
     [[nodiscard]] const std::string &cache_drop_event_file() const { return cache_drop_event_file_; }
+    [[nodiscard]] const CapacityMissMetricConfig &capacity_miss_metric() const { return capacity_miss_metric_; }
     [[nodiscard]] const std::vector<InferClusterConfig> &infer_clusters() const { return infer_clusters_; }
 
     void set_trace_file_path(const std::string &path) { trace_file_path_ = path; }
@@ -281,6 +301,7 @@ public:
     void set_enable_lifecycle_tracking(bool enabled) { enable_lifecycle_tracking_ = enabled; }
     void set_enable_cache_retention_tracking(bool enabled) { enable_cache_retention_tracking_ = enabled; }
     void set_cache_drop_event_file(const std::string &path) { cache_drop_event_file_ = path; }
+    void set_capacity_miss_metric(const CapacityMissMetricConfig &config) { capacity_miss_metric_ = config; }
 
 private:
     bool BuildOptimizerConfigs();
@@ -299,6 +320,7 @@ private:
     bool enable_lifecycle_tracking_ = false;
     bool enable_cache_retention_tracking_ = false;
     std::string cache_drop_event_file_;
+    CapacityMissMetricConfig capacity_miss_metric_;
 };
 
 } // namespace kv_cache_manager

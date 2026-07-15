@@ -200,7 +200,14 @@ PYBIND11_MODULE(kvcm_py_optimizer, module) {
         .def_readonly("engine_hit_length", &kvcm::HierarchicalGetCacheLocationRes::engine_hit_length)
         .def_readonly("peer_hit_length", &kvcm::HierarchicalGetCacheLocationRes::peer_hit_length)
         .def_readonly("storage_pool_hit_length", &kvcm::HierarchicalGetCacheLocationRes::storage_pool_hit_length)
-        .def_readonly("total_hit_length", &kvcm::HierarchicalGetCacheLocationRes::total_hit_length);
+        .def_readonly("total_hit_length", &kvcm::HierarchicalGetCacheLocationRes::total_hit_length)
+        .def_readonly("actual_prefix_tokens", &kvcm::HierarchicalGetCacheLocationRes::actual_prefix_tokens)
+        .def_readonly("global_prefix_tokens", &kvcm::HierarchicalGetCacheLocationRes::global_prefix_tokens)
+        .def_readonly("counterfactual_prefix_tokens",
+                      &kvcm::HierarchicalGetCacheLocationRes::counterfactual_prefix_tokens)
+        .def_readonly("routing_miss_tokens", &kvcm::HierarchicalGetCacheLocationRes::routing_miss_tokens)
+        .def_readonly("capacity_miss_tokens", &kvcm::HierarchicalGetCacheLocationRes::capacity_miss_tokens)
+        .def_readonly("cold_miss_tokens", &kvcm::HierarchicalGetCacheLocationRes::cold_miss_tokens);
 
     py::class_<kvcm::HierarchicalReplayConfig>(module, "HierarchicalReplayConfig")
         .def(py::init<>());

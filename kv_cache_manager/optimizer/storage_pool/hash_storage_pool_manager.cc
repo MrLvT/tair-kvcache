@@ -126,6 +126,7 @@ HashStoragePoolReadResult HashStoragePoolManager::Read(const HashStoragePoolRead
         throw std::runtime_error("HashStoragePoolManager::Read requires block_ids");
     }
 
+    current_presence_events_.clear();
     HashStoragePoolReadResult result;
     auto &instance = GetInstanceOrThrow(request.instance_id);
     stats_collector_->UpdateTimestamp(request.instance_id, request.timestamp);
@@ -135,6 +136,7 @@ HashStoragePoolReadResult HashStoragePoolManager::Read(const HashStoragePoolRead
             request.instance_id,
             BuildReadRecord(
                 instance, request.trace_id, request.timestamp, 0, 0, static_cast<size_t>(request.input_tokens)));
+        result.presence_events = current_presence_events_;
         return result;
     }
 
@@ -195,6 +197,7 @@ HashStoragePoolReadResult HashStoragePoolManager::Read(const HashStoragePoolRead
                                                      remote_read_blocks,
                                                      result.hit_blocks,
                                                      static_cast<size_t>(request.input_tokens)));
+    result.presence_events = current_presence_events_;
     return result;
 }
 
@@ -204,6 +207,7 @@ WriteCacheRes HashStoragePoolManager::WriteKeys(const std::string &instance_id,
                                                 const std::vector<int64_t> &keys,
                                                 int64_t ttl_us,
                                                 bool touch_existing) {
+    current_presence_events_.clear();
     auto &instance = GetInstanceOrThrow(instance_id);
     stats_collector_->UpdateTimestamp(instance_id, timestamp);
     EvictExpiredForGroup(instance.group_name, timestamp);
@@ -230,6 +234,7 @@ WriteCacheRes HashStoragePoolManager::WriteKeys(const std::string &instance_id,
     res.trace_id = trace_id;
     res.kvcm_write_length = newly_inserted;
     res.kvcm_write_hit_length = keys.size() - newly_inserted;
+    res.presence_events = current_presence_events_;
     return res;
 }
 
@@ -286,6 +291,11 @@ void HashStoragePoolManager::InsertNewBlock(PoolInstance &instance, int64_t key,
     if (stats_collector_) {
         stats_collector_->OnBlockBirth(instance.pool_id, ptr, timestamp);
     }
+    current_presence_events_.push_back(CachePresenceEvent{CachePresenceEventKind::ENTER,
+                                                          CachePresenceRemovalReason::NONE,
+                                                          "pool:" + instance.pool_id,
+                                                          key,
+                                                          timestamp});
 }
 
 void HashStoragePoolManager::TouchBlock(PoolInstance &instance,
@@ -311,6 +321,7 @@ void HashStoragePoolManager::TouchBlock(PoolInstance &instance,
 void HashStoragePoolManager::RemoveBlock(PoolInstance &instance,
                                          BlockEntry *block,
                                          int64_t timestamp,
+                                         CachePresenceRemovalReason reason,
                                          bool use_logical_expire_time) {
     if (block == nullptr) {
         return;
@@ -323,7 +334,10 @@ void HashStoragePoolManager::RemoveBlock(PoolInstance &instance,
         stats_collector_->OnBlockEviction(instance.pool_id, block, eviction_timestamp);
         stats_collector_->OnBlockRetentionEviction(instance.pool_id, block, timestamp);
     }
+    const int64_t key = block->key;
     instance.index->Remove(block);
+    current_presence_events_.push_back(
+        CachePresenceEvent{CachePresenceEventKind::LEAVE, reason, "pool:" + instance.pool_id, key, timestamp});
 }
 
 void HashStoragePoolManager::EvictExpiredForGroup(const std::string &group_name, int64_t timestamp) {
@@ -340,7 +354,7 @@ void HashStoragePoolManager::EvictExpiredForInstance(PoolInstance &instance, int
     instance.eviction_policy->AdvanceClock(timestamp);
     auto evicted = instance.eviction_policy->EvictExpired();
     for (auto *block : evicted) {
-        RemoveBlock(instance, block, timestamp, true);
+        RemoveBlock(instance, block, timestamp, CachePresenceRemovalReason::TTL_EXPIRED, true);
     }
 }
 
@@ -397,7 +411,7 @@ void HashStoragePoolManager::EvictInstance(PoolInstance &instance,
         }
         evicted_bytes += evicted.size() * bytes_per_block;
         for (auto *block : evicted) {
-            RemoveBlock(instance, block, timestamp, false);
+            RemoveBlock(instance, block, timestamp, CachePresenceRemovalReason::CAPACITY, false);
         }
     }
 }
@@ -419,7 +433,7 @@ void HashStoragePoolManager::EvictGroupRough(PoolGroup &group, size_t bytes_to_e
             evicted_any = true;
             evicted_bytes += evicted.size() * BytesPerBlock(instance);
             for (auto *block : evicted) {
-                RemoveBlock(instance, block, timestamp, false);
+                RemoveBlock(instance, block, timestamp, CachePresenceRemovalReason::CAPACITY, false);
             }
             if (evicted_bytes >= bytes_to_evict) {
                 break;

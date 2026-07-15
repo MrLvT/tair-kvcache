@@ -241,6 +241,99 @@ TEST_F(HierarchicalReplayManagerTest, LinksEngineInstancesToSharedPool) {
     EXPECT_TRUE(std::filesystem::exists(root + "/combined/hierarchical_hit_rates.csv"));
 }
 
+TEST_F(HierarchicalReplayManagerTest, CapacityMissMetricClassifiesColdRoutingAndCapacity) {
+    CapacityMissMetricConfig metric;
+    metric.set_enabled(true);
+    metric.set_ghost_retention_seconds(1800);
+    metric.set_window_seconds(300);
+
+    const std::string routing_root = GetTestTempRootPath() + "/hierarchical_capacity_miss_routing";
+    auto routing_config = CreateHierarchicalConfig(routing_root);
+    routing_config.set_capacity_miss_metric(metric);
+    routing_config.set_engine_config(
+        CreateEngineOptimizerConfig("engine_group", {"engine_a", "engine_b"}, {"hbm"}, routing_root + "/infer"));
+    auto cascading = CreateStoragePoolFlow();
+    cascading.set_write_mode(TierWriteMode::CASCADING);
+    SetStoragePoolFlow(routing_config, cascading);
+
+    HierarchicalReplayManager routing_manager(routing_config);
+    ASSERT_TRUE(routing_manager.Init());
+    auto cold = routing_manager.GetCacheLocation("engine_b", "cold", 1000, {701}, 16, "batch_get");
+    EXPECT_EQ(cold.cold_miss_tokens, 16);
+    EXPECT_EQ(cold.routing_miss_tokens, 0);
+    EXPECT_EQ(cold.capacity_miss_tokens, 0);
+
+    routing_manager.WriteCache("engine_a", "write_routing", 1100, {702});
+    auto routing = routing_manager.GetCacheLocation("engine_b", "routing", 1200, {702}, 16, "batch_get");
+    EXPECT_EQ(routing.actual_prefix_tokens, 0);
+    EXPECT_EQ(routing.global_prefix_tokens, 16);
+    EXPECT_EQ(routing.routing_miss_tokens, 16);
+    EXPECT_EQ(routing.capacity_miss_tokens, 0);
+
+    const std::string capacity_root = GetTestTempRootPath() + "/hierarchical_capacity_miss_capacity";
+    auto capacity_config = CreateHierarchicalConfig(capacity_root);
+    capacity_config.set_capacity_miss_metric(metric);
+    auto capacity_engine_config = CreateEngineOptimizerConfig(
+        "engine_group", {"engine_a", "engine_b"}, {"hbm"}, capacity_root + "/infer", 16);
+    for (auto &group : capacity_engine_config.mutable_instance_groups()) {
+        group.set_quota_capacity(16);
+    }
+    capacity_config.set_engine_config(capacity_engine_config);
+    capacity_config.set_storage_pool(CreateStoragePoolConfig({"model_l3"}, capacity_root + "/pool", 16));
+
+    HierarchicalReplayManager capacity_manager(capacity_config);
+    ASSERT_TRUE(capacity_manager.Init());
+    capacity_manager.WriteCache("engine_a", "write_first", 1000, {711});
+    auto eviction = capacity_manager.WriteCache("engine_a", "evict_one", 1100, {712});
+    ASSERT_EQ(eviction.evicted_keys.size(), 1);
+    const int64_t evicted_key = eviction.evicted_keys.front();
+    auto capacity =
+        capacity_manager.GetCacheLocation("engine_b", "capacity", 1200, {evicted_key}, 16, "batch_get");
+    EXPECT_EQ(capacity.actual_prefix_tokens, 0);
+    EXPECT_EQ(capacity.global_prefix_tokens, 0);
+    EXPECT_EQ(capacity.counterfactual_prefix_tokens, 16);
+    EXPECT_EQ(capacity.capacity_miss_tokens, 16);
+    EXPECT_EQ(capacity.cold_miss_tokens, 0);
+    capacity_manager.AnalyzeResults();
+    EXPECT_TRUE(std::filesystem::exists(capacity_root + "/combined/hierarchical_capacity_miss.csv"));
+}
+
+TEST_F(HierarchicalReplayManagerTest, CapacityMissMetricCountsCacheDropAsScaleIn) {
+    const std::string root = GetTestTempRootPath() + "/hierarchical_capacity_miss_scale_in";
+    std::filesystem::create_directories(root);
+    auto config = CreateHierarchicalConfig(root);
+    CapacityMissMetricConfig metric;
+    metric.set_enabled(true);
+    metric.set_ghost_retention_seconds(1800);
+    metric.set_window_seconds(300);
+    config.set_capacity_miss_metric(metric);
+    config.set_cache_drop_event_file(root + "/drop_events.jsonl");
+    auto cascading = CreateStoragePoolFlow();
+    cascading.set_write_mode(TierWriteMode::CASCADING);
+    SetStoragePoolFlow(config, cascading);
+
+    std::ofstream trace(config.trace_file_path());
+    trace << R"({"type":"write","instance_id":"engine_a","trace_id":"write","timestamp_ns":100,"keys":[721]})"
+          << "\n";
+    trace << R"({"type":"get","instance_id":"engine_b","trace_id":"after_scale_in","timestamp_ns":300,"keys":[721],"input_len":16,"query_type":"batch_get","block_mask":[]})"
+          << "\n";
+    trace.close();
+    std::ofstream drops(config.cache_drop_event_file());
+    drops << R"({"timestamp_ns":200,"instance_id":"engine_a"})" << "\n";
+    drops.close();
+
+    HierarchicalReplayManager manager(config);
+    ASSERT_TRUE(manager.Init());
+    manager.DirectRun();
+    manager.AnalyzeResults();
+
+    std::ifstream csv(root + "/combined/hierarchical_capacity_miss.csv");
+    ASSERT_TRUE(csv.is_open());
+    std::ostringstream content;
+    content << csv.rdbuf();
+    EXPECT_THAT(content.str(), HasSubstr("after_scale_in,engine_b,model_l3,16,0,0,16,0,16,0"));
+}
+
 TEST_F(HierarchicalReplayManagerTest, P2PReadHitsPeerAndFillsCurrentEngine) {
     const std::string root = GetTestTempRootPath() + "/hierarchical_replay_p2p";
     HierarchicalReplayConfig config = CreateHierarchicalConfig(root);
@@ -442,6 +535,11 @@ TEST_F(HierarchicalReplayManagerTest, ParsesCompactClusterConfig) {
         },
         "infer_scheduling_strategy": "preserve_trace",
         "enable_lifecycle_tracking": true,
+        "capacity_miss_metric": {
+            "enabled": true,
+            "ghost_retention_seconds": 1800,
+            "window_seconds": 300
+        },
         "infer_clusters": [
             {
                 "storage_pool_id": "model_l3",
@@ -527,6 +625,9 @@ TEST_F(HierarchicalReplayManagerTest, ParsesCompactClusterConfig) {
     EXPECT_EQ(config.trace_replay_config().mode(), TraceReplayMode::REQUEST);
     EXPECT_EQ(config.trace_replay_config().write_delay_ns(), 1000);
     EXPECT_EQ(config.storage_pool().output_result_path(), root + "/output/pool");
+    EXPECT_TRUE(config.capacity_miss_metric().enabled());
+    EXPECT_EQ(config.capacity_miss_metric().ghost_retention_seconds(), 1800);
+    EXPECT_EQ(config.capacity_miss_metric().window_seconds(), 300);
 
     HierarchicalReplayManager manager(config);
     EXPECT_TRUE(manager.Init());

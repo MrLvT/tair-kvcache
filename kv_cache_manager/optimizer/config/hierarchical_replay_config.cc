@@ -247,6 +247,24 @@ void InferClusterConfig::ToRapidWriter(rapidjson::Writer<rapidjson::StringBuffer
     Put(writer, "storage_pool_flow", storage_pool_flow_);
 }
 
+bool CapacityMissMetricConfig::FromRapidValue(const rapidjson::Value &rapid_value) {
+    if (!rapid_value.IsObject()) {
+        return false;
+    }
+    KVCM_JSON_GET_DEFAULT_MACRO(rapid_value, "enabled", enabled_, false);
+    KVCM_JSON_GET_DEFAULT_MACRO(
+        rapid_value, "ghost_retention_seconds", ghost_retention_seconds_, int64_t{1800});
+    KVCM_JSON_GET_DEFAULT_MACRO(rapid_value, "window_seconds", window_seconds_, int64_t{300});
+    return ghost_retention_seconds_ >= 300 && window_seconds_ == 300;
+}
+
+void CapacityMissMetricConfig::ToRapidWriter(
+    rapidjson::Writer<rapidjson::StringBuffer> &writer) const noexcept {
+    Put(writer, "enabled", enabled_);
+    Put(writer, "ghost_retention_seconds", ghost_retention_seconds_);
+    Put(writer, "window_seconds", window_seconds_);
+}
+
 bool HierarchicalReplayConfig::FromRapidValue(const rapidjson::Value &rapid_value) {
     KVCM_JSON_GET_MACRO(rapid_value, "trace_file_path", trace_file_path_);
     KVCM_JSON_GET_MACRO(rapid_value, "output_result_path", output_result_path_);
@@ -272,6 +290,22 @@ bool HierarchicalReplayConfig::FromRapidValue(const rapidjson::Value &rapid_valu
     KVCM_JSON_GET_DEFAULT_MACRO(
         rapid_value, "infer_active_windows_from_trace", infer_active_windows_from_trace_, false);
     KVCM_JSON_GET_DEFAULT_MACRO(rapid_value, "cache_drop_event_file", cache_drop_event_file_, std::string(""));
+    capacity_miss_metric_ = CapacityMissMetricConfig();
+    if (rapid_value.HasMember("capacity_miss_metric") &&
+        (!rapid_value["capacity_miss_metric"].IsObject() ||
+         !capacity_miss_metric_.FromRapidValue(rapid_value["capacity_miss_metric"]))) {
+        return false;
+    }
+    if (capacity_miss_metric_.enabled()) {
+        if (storage_pool_.ttl_config().default_block_ttl_seconds() != 0) {
+            return false;
+        }
+        for (const auto &cluster : infer_clusters_) {
+            if (cluster.ttl_config().default_block_ttl_seconds() != 0) {
+                return false;
+            }
+        }
+    }
     if (infer_active_windows_from_trace_) {
         for (const auto &cluster : infer_clusters_) {
             if (!cluster.active_windows().empty()) {
@@ -305,6 +339,7 @@ void HierarchicalReplayConfig::ToRapidWriter(rapidjson::Writer<rapidjson::String
     Put(writer, "infer_active_windows_from_trace", infer_active_windows_from_trace_);
     Put(writer, "enable_lifecycle_tracking", enable_lifecycle_tracking_);
     Put(writer, "enable_cache_retention_tracking", enable_cache_retention_tracking_);
+    Put(writer, "capacity_miss_metric", capacity_miss_metric_);
     if (!cache_drop_event_file_.empty()) {
         Put(writer, "cache_drop_event_file", cache_drop_event_file_);
     }

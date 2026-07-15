@@ -95,6 +95,34 @@ bool HierarchicalReplayManager::Init() {
     next_pending_write_sequence_ = 0;
     next_cache_drop_event_index_ = 0;
 
+    if (config_.capacity_miss_metric().enabled()) {
+        if (config_.capacity_miss_metric().window_seconds() != 300 ||
+            config_.capacity_miss_metric().ghost_retention_seconds() < 300) {
+            KVCM_LOG_ERROR("Capacity miss metric v1 requires a 300-second window and ghost retention >= 300 seconds.");
+            return false;
+        }
+        if (config_.storage_pool().ttl_config().default_block_ttl_seconds() != 0) {
+            KVCM_LOG_ERROR("Capacity miss metric v1 requires storage pool TTL to be disabled.");
+            return false;
+        }
+        for (const auto &group : config_.engine_config().instance_groups()) {
+            if (group.ttl_config().default_block_ttl_seconds() != 0) {
+                KVCM_LOG_ERROR("Capacity miss metric v1 requires engine TTL to be disabled.");
+                return false;
+            }
+        }
+        try {
+            capacity_miss_tracker_ = std::make_unique<CapacityMissTracker>(
+                config_.capacity_miss_metric().ghost_retention_seconds(),
+                config_.capacity_miss_metric().window_seconds());
+        } catch (const std::exception &e) {
+            KVCM_LOG_ERROR("Invalid capacity miss metric config: %s", e.what());
+            return false;
+        }
+    } else {
+        capacity_miss_tracker_.reset();
+    }
+
     const bool enable_lifecycle_tracking = config_.enable_lifecycle_tracking();
     const bool enable_cache_retention_tracking = config_.enable_cache_retention_tracking();
     std::unordered_map<std::string, std::string> engine_to_service;
@@ -366,6 +394,33 @@ void HierarchicalReplayManager::ApplyEngineTierEvents(const std::vector<TierFlow
         }
         const std::string &cluster_id = cluster_it->second;
         p2p_tracker_.ApplyEvent(cluster_id, event);
+        if (!capacity_miss_tracker_) {
+            continue;
+        }
+        const std::string &scope_id = StoragePoolForEngine(event.instance_id);
+        const std::string holder_id = "engine:" + event.instance_id;
+        if (event.kind == TierFlowEventKind::ENTER_TIER) {
+            capacity_miss_tracker_->AddLive(scope_id, holder_id, event.block_key, event.timestamp_ns);
+        } else if (event.kind == TierFlowEventKind::FINAL_EVICT) {
+            capacity_miss_tracker_->RemoveLive(scope_id,
+                                               holder_id,
+                                               event.block_key,
+                                               event.timestamp_ns,
+                                               CachePresenceRemovalReason::CAPACITY);
+        }
+    }
+}
+
+void HierarchicalReplayManager::ApplyStoragePoolPresenceEvents(const std::vector<CachePresenceEvent> &events) {
+    if (!capacity_miss_tracker_) {
+        return;
+    }
+    for (const auto &event : events) {
+        constexpr char kPoolPrefix[] = "pool:";
+        if (event.holder_id.rfind(kPoolPrefix, 0) != 0) {
+            continue;
+        }
+        capacity_miss_tracker_->ApplyEvents(event.holder_id.substr(sizeof(kPoolPrefix) - 1), {event});
     }
 }
 
@@ -609,6 +664,9 @@ void HierarchicalReplayManager::HandleRequest(const RequestSchemaTrace &trace) {
     if (!IsSupportedQueryType(trace.query_type())) {
         throw std::runtime_error("Unsupported hierarchical query_type: " + trace.query_type());
     }
+    if (capacity_miss_tracker_ && trace.ttl_us() > 0) {
+        throw std::runtime_error("Capacity miss metric v1 does not support per-request TTL");
+    }
     GetCacheLocation(trace.instance_id(),
                      trace.trace_id(),
                      trace.timestamp_ns(),
@@ -680,6 +738,17 @@ void HierarchicalReplayManager::ApplyCacheDropEvent(const CacheDropEvent &event)
         throw std::runtime_error("HierarchicalReplayManager is not initialized");
     }
     const std::string &cluster_id = ClusterForEngine(event.instance_id);
+    if (capacity_miss_tracker_) {
+        const std::string &scope_id = StoragePoolForEngine(event.instance_id);
+        const std::string holder_id = "engine:" + event.instance_id;
+        for (const int64_t key : engine_manager_->SnapshotLiveKeys(event.instance_id)) {
+            capacity_miss_tracker_->RemoveLive(scope_id,
+                                               holder_id,
+                                               key,
+                                               event.timestamp_ns,
+                                               CachePresenceRemovalReason::SCALE_IN);
+        }
+    }
     if (!engine_manager_->ClearCacheAt(event.instance_id, event.timestamp_ns)) {
         throw std::runtime_error("Failed to drop engine cache for instance_id: " + event.instance_id);
     }
@@ -704,6 +773,10 @@ HierarchicalGetCacheLocationRes HierarchicalReplayManager::GetCacheLocation(cons
     }
 
     const std::string &storage_pool_id = StoragePoolForEngine(engine_instance_id);
+    CapacityMissPrefixSnapshot capacity_snapshot;
+    if (capacity_miss_tracker_) {
+        capacity_snapshot = capacity_miss_tracker_->SnapshotPrefix(storage_pool_id, block_ids, timestamp);
+    }
     const std::string &engine_read_query_type = EngineReadQueryTypeForEngine(engine_instance_id);
     const BlockMask empty_mask = BlockMaskVector{};
     const auto engine_res = engine_manager_->GetCacheLocation(
@@ -761,6 +834,22 @@ HierarchicalGetCacheLocationRes HierarchicalReplayManager::GetCacheLocation(cons
     const size_t storage_pool_hit_blocks = storage_pool_read.hit_blocks;
     MarkIndices(storage_pool_read.hit_indices, &satisfied_mask);
 
+    size_t actual_prefix_blocks = 0;
+    while (actual_prefix_blocks < satisfied_mask.size() && satisfied_mask[actual_prefix_blocks]) {
+        ++actual_prefix_blocks;
+    }
+    CapacityMissRecord capacity_record;
+    if (capacity_miss_tracker_) {
+        capacity_record = capacity_miss_tracker_->RecordRequest(storage_pool_id,
+                                                                engine_instance_id,
+                                                                trace_id,
+                                                                timestamp,
+                                                                block_size_it->second,
+                                                                block_ids.size(),
+                                                                actual_prefix_blocks,
+                                                                capacity_snapshot);
+    }
+
     CombinedReadRecord record;
     record.trace_id = trace_id;
     record.engine_instance_id = engine_instance_id;
@@ -781,6 +870,12 @@ HierarchicalGetCacheLocationRes HierarchicalReplayManager::GetCacheLocation(cons
     res.peer_hit_length = static_cast<int64_t>(peer_hit_indices.size());
     res.storage_pool_hit_length = static_cast<int64_t>(storage_pool_hit_blocks);
     res.total_hit_length = static_cast<int64_t>(engine_hit_blocks + peer_hit_indices.size() + storage_pool_hit_blocks);
+    res.actual_prefix_tokens = static_cast<int64_t>(capacity_record.actual_prefix_tokens);
+    res.global_prefix_tokens = static_cast<int64_t>(capacity_record.global_prefix_tokens);
+    res.counterfactual_prefix_tokens = static_cast<int64_t>(capacity_record.counterfactual_prefix_tokens);
+    res.routing_miss_tokens = static_cast<int64_t>(capacity_record.routing_miss_tokens);
+    res.capacity_miss_tokens = static_cast<int64_t>(capacity_record.capacity_miss_tokens);
+    res.cold_miss_tokens = static_cast<int64_t>(capacity_record.cold_miss_tokens);
     return res;
 }
 
@@ -800,6 +895,9 @@ WriteCacheRes HierarchicalReplayManager::WriteCacheWithTtlUs(const std::string &
                                                              int64_t ttl_us) {
     if (!engine_manager_ || !storage_pool_manager_) {
         throw std::runtime_error("HierarchicalReplayManager is not initialized");
+    }
+    if (capacity_miss_tracker_ && ttl_us > 0) {
+        throw std::runtime_error("Capacity miss metric v1 does not support per-request TTL");
     }
     const std::string &storage_pool_id = StoragePoolForEngine(engine_instance_id);
 
@@ -838,6 +936,7 @@ HashStoragePoolReadResult HierarchicalReplayManager::ReadStoragePool(const std::
                                                                     input_len,
                                                                     query_type,
                                                                     flow.local_read_touch_enabled()));
+    ApplyStoragePoolPresenceEvents(result.presence_events);
 
     if (result.hit_blocks == 0) {
         return result;
@@ -863,6 +962,7 @@ WriteCacheRes HierarchicalReplayManager::WriteStoragePoolKeys(const std::string 
     }
 
     res = storage_pool_manager_->WriteKeys(storage_pool_id, trace_id, timestamp, keys, ttl_us, touch_existing);
+    ApplyStoragePoolPresenceEvents(res.presence_events);
     auto block_size_it = engine_block_size_.find(engine_instance_id);
     if (block_size_it == engine_block_size_.end()) {
         throw std::runtime_error("Unknown engine instance: " + engine_instance_id);
@@ -945,6 +1045,9 @@ void HierarchicalReplayManager::AnalyzeResults() {
     ExportCombinedHitRates();
     ExportReadIo();
     ExportPoolWriteIo();
+    if (capacity_miss_tracker_) {
+        capacity_miss_tracker_->ExportCsv(config_.output_result_path());
+    }
     if (engine_manager_) {
         engine_manager_->AnalyzeResults();
     }
