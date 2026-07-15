@@ -7,11 +7,15 @@
 
 #include "kv_cache_manager/common/logger.h"
 #include "kv_cache_manager/meta/cache_location.h"
+#include "kv_cache_manager/optimizer/config/hierarchical_replay_config.h"
+#include "kv_cache_manager/optimizer/config/hierarchical_replay_config_loader.h"
 #include "kv_cache_manager/optimizer/config/insight_simulator_types.h"
 #include "kv_cache_manager/optimizer/config/instance_config.h"
 #include "kv_cache_manager/optimizer/config/instance_group_config.h"
 #include "kv_cache_manager/optimizer/config/optimizer_config.h"
 #include "kv_cache_manager/optimizer/config/optimizer_config_loader.h"
+#include "kv_cache_manager/optimizer/manager/hierarchical_replay_manager.h"
+#include "kv_cache_manager/optimizer/scheduler/infer_engine_scheduler.h"
 #include "kv_cache_manager/optimizer/manager/optimizer_loader.h"
 #include "kv_cache_manager/optimizer/manager/optimizer_manager.h"
 
@@ -118,11 +122,12 @@ PYBIND11_MODULE(kvcm_py_optimizer, module) {
 
     // 绑定OptimizerManager类
     py::class_<kvcm::OptimizerManager>(module, "OptimizerManager")
-        .def(py::init<const kvcm::OptimizerConfig &, bool, bool, kvcm::HitRatePerspective>(),
+        .def(py::init<const kvcm::OptimizerConfig &, bool, bool, kvcm::HitRatePerspective, bool>(),
              py::arg("config"),
              py::arg("enable_lifecycle_tracking") = false,
              py::arg("enable_template_analysis") = false,
              py::arg("hit_rate_perspective") = kvcm::HitRatePerspective::KVCM_L3,
+             py::arg("enable_cache_retention_tracking") = false,
              "Initialize OptimizerManager. Set enable_lifecycle_tracking=True to track block lifecycle (uses ~10GB "
              "more memory). Set enable_template_analysis=True to enable template prefix analysis (slower replay)")
         .def("Init", &kvcm::OptimizerManager::Init, py::call_guard<py::gil_scoped_release>())
@@ -187,5 +192,51 @@ PYBIND11_MODULE(kvcm_py_optimizer, module) {
              &kvcm::OptimizerManager::ClearAllCachesAndResetStats,
              py::call_guard<py::gil_scoped_release>(),
              "Clear caches and reset statistics for all instances");
+
+    // ---- HierarchicalReplayManager bindings ----
+
+    py::class_<kvcm::HierarchicalGetCacheLocationRes>(module, "HierarchicalGetCacheLocationRes")
+        .def_readonly("trace_id", &kvcm::HierarchicalGetCacheLocationRes::trace_id)
+        .def_readonly("engine_hit_length", &kvcm::HierarchicalGetCacheLocationRes::engine_hit_length)
+        .def_readonly("peer_hit_length", &kvcm::HierarchicalGetCacheLocationRes::peer_hit_length)
+        .def_readonly("storage_pool_hit_length", &kvcm::HierarchicalGetCacheLocationRes::storage_pool_hit_length)
+        .def_readonly("total_hit_length", &kvcm::HierarchicalGetCacheLocationRes::total_hit_length);
+
+    py::class_<kvcm::HierarchicalReplayConfig>(module, "HierarchicalReplayConfig")
+        .def(py::init<>());
+
+    py::class_<kvcm::HierarchicalReplayConfigLoader>(module, "HierarchicalReplayConfigLoader")
+        .def(py::init<>())
+        .def("load", &kvcm::HierarchicalReplayConfigLoader::Load)
+        .def("config", &kvcm::HierarchicalReplayConfigLoader::get_config);
+
+    py::class_<kvcm::HierarchicalReplayManager>(module, "HierarchicalReplayManager")
+        .def(py::init<const kvcm::HierarchicalReplayConfig &>(), py::arg("config"))
+        .def("Init", &kvcm::HierarchicalReplayManager::Init, py::call_guard<py::gil_scoped_release>())
+        .def("DirectRun",
+             [](kvcm::HierarchicalReplayManager &self) {
+                 py::gil_scoped_release release;
+                 self.DirectRun();
+             },
+             "Run the full hierarchical replay from the configured trace file")
+        .def("AnalyzeResults",
+             &kvcm::HierarchicalReplayManager::AnalyzeResults,
+             py::call_guard<py::gil_scoped_release>())
+        .def("SetPrefillDurationPredictor",
+             [](kvcm::HierarchicalReplayManager &self, py::function predictor) {
+                 // Wrap the Python callable in a C++ std::function.
+                 // The predictor is called during DirectRun, which releases the GIL.
+                 // We must re-acquire the GIL before calling back into Python.
+                 auto cpp_predictor = [predictor = std::move(predictor)](int64_t input_len,
+                                                                         int64_t cache_hit_len) -> int64_t {
+                     py::gil_scoped_acquire acquire;
+                     return predictor(input_len, cache_hit_len).cast<int64_t>();
+                 };
+                 self.SetPrefillDurationPredictor(std::move(cpp_predictor));
+             },
+             py::arg("predictor"),
+             "Set a Python callback predicting prefill duration in nanoseconds.\n"
+             "Signature: predictor(input_len: int, cache_hit_len: int) -> int\n"
+             "Required when using load_balance scheduling strategy.");
 
 } // namespace kv_cache_manager

@@ -37,7 +37,7 @@ def collect_instance_csvs(output_dir: str) -> Dict[str, str]:
     }
 
 
-def parse_instance_metrics(csv_file: str, bytes_per_block: int) -> Optional[dict]:
+def parse_instance_metrics(csv_file: str, bytes_per_block: int, metric_start_ns: int = None) -> Optional[dict]:
     """
     从单个 instance CSV 解析累计指标（取最后一行）。
 
@@ -65,11 +65,41 @@ def parse_instance_metrics(csv_file: str, bytes_per_block: int) -> Optional[dict
     if missing:
         raise ValueError(f"{csv_file} missing columns: {missing}")
     last = df.iloc[-1]
+    if metric_start_ns is not None:
+        metric_cols = [
+            "AccInputTokens",
+            "AccLocalHitTokens",
+            "AccRemoteHitTokens",
+            "AccHitTokens",
+        ]
+        missing_metric = [col for col in metric_cols + ["TimestampNs"] if col not in df.columns]
+        if missing_metric:
+            raise ValueError(f"{csv_file} missing window metric columns: {missing_metric}")
+        before = df[df["TimestampNs"] < metric_start_ns]
+        base = before.iloc[-1] if not before.empty else None
+
+        def delta(col: str) -> int:
+            value = int(last[col])
+            if base is not None:
+                value -= int(base[col])
+            return value
+
+        input_tokens = delta("AccInputTokens")
+        local_hit_tokens = delta("AccLocalHitTokens")
+        remote_hit_tokens = delta("AccRemoteHitTokens")
+        hit_tokens = delta("AccHitTokens")
+        total_rate = hit_tokens / input_tokens if input_tokens > 0 else 0.0
+        local_rate = local_hit_tokens / input_tokens if input_tokens > 0 else 0.0
+        remote_rate = remote_hit_tokens / input_tokens if input_tokens > 0 else 0.0
+    else:
+        total_rate = float(last["AccHitRate"])
+        local_rate = float(last["AccLocalHitRate"])
+        remote_rate = float(last["AccRemoteHitRate"])
     cached_blocks_all = int(last["CachedBlocksAllInstances"])
     result = {
-        "acc_total_hit_rate": float(last["AccHitRate"]),
-        "acc_local_hit_rate": float(last["AccLocalHitRate"]),
-        "acc_remote_hit_rate": float(last["AccRemoteHitRate"]),
+        "acc_total_hit_rate": total_rate,
+        "acc_local_hit_rate": local_rate,
+        "acc_remote_hit_rate": remote_rate,
         "cached_blocks_all": cached_blocks_all,
         "cached_gb": cached_blocks_all * bytes_per_block / (1024 ** 3) if bytes_per_block > 0 else 0,
     }

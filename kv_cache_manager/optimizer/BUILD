@@ -22,7 +22,23 @@ cc_binary(
     deps = [
         "//kv_cache_manager/common:logger",
         "//kv_cache_manager/optimizer/config",
+        "//kv_cache_manager/optimizer/index",
         "//kv_cache_manager/optimizer/manager",
+        "//kv_cache_manager/optimizer/p2p",
+        "//kv_cache_manager/optimizer/scheduler",
+        "//kv_cache_manager/optimizer/storage_pool",
+    ],
+)
+
+cc_binary(
+    name = "streaming_theory_main",
+    srcs = [
+        "streaming_theory_main.cc",
+    ],
+    deps = [
+        "//kv_cache_manager/optimizer/config",
+        "//kv_cache_manager/optimizer/eviction_policy",
+        "//kv_cache_manager/optimizer/index",
     ],
 )
 cc_library(

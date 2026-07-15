@@ -8,6 +8,7 @@
 
 #include "kv_cache_manager/common/logger.h"
 #include "kv_cache_manager/optimizer/analysis/tracker/block_lifecycle_tracker.h"
+#include "kv_cache_manager/optimizer/analysis/tracker/cache_retention_tracker.h"
 #include "kv_cache_manager/optimizer/analysis/tracker/hit_rate_tracker.h"
 #include "kv_cache_manager/optimizer/eviction_policy/policy_factory.h"
 #include "kv_cache_manager/optimizer/trace_loader/optimizer_schema_trace.h"
@@ -25,8 +26,13 @@ size_t GbToBytes(double gb) { return static_cast<size_t>(gb * kBytesPerGb); }
 } // namespace
 
 HashStoragePoolManager::HashStoragePoolManager(const HierarchicalStoragePoolConfig &config,
-                                               bool enable_lifecycle_tracking)
-    : config_(config), enable_lifecycle_tracking_(enable_lifecycle_tracking) {}
+                                               bool enable_lifecycle_tracking,
+                                               bool enable_cache_retention_tracking,
+                                               std::unordered_map<std::string, std::string> instance_to_service)
+    : config_(config)
+    , enable_lifecycle_tracking_(enable_lifecycle_tracking)
+    , enable_cache_retention_tracking_(enable_cache_retention_tracking)
+    , instance_to_service_(std::move(instance_to_service)) {}
 
 bool HashStoragePoolManager::Init() {
     if (config_.output_result_path().empty() || config_.storage_name().empty() || config_.capacity() <= 0.0) {
@@ -53,6 +59,9 @@ bool HashStoragePoolManager::Init() {
     stats_collector_->EmplaceTracker<HitRateTracker>();
     if (enable_lifecycle_tracking_) {
         stats_collector_->EmplaceTracker<BlockLifecycleTracker>();
+    }
+    if (enable_cache_retention_tracking_) {
+        stats_collector_->EmplaceTracker<CacheRetentionTracker>(instance_to_service_);
     }
 
     PoolGroup group;
@@ -289,7 +298,14 @@ void HashStoragePoolManager::TouchBlock(PoolInstance &instance,
         return;
     }
     instance.index->Touch(block, timestamp, count_read, count_write_touch);
-    instance.eviction_policy->OnBlockAccessedWithOptions(block, timestamp, refresh_ttl);
+    if (count_read) {
+        if (stats_collector_) {
+            stats_collector_->OnBlockReadHit(instance.pool_id, block, timestamp);
+        }
+        instance.eviction_policy->OnBlockAccessedWithOptions(block, timestamp, refresh_ttl);
+    } else {
+        instance.eviction_policy->OnBlockTouched(block, timestamp);
+    }
 }
 
 void HashStoragePoolManager::RemoveBlock(PoolInstance &instance,
@@ -305,6 +321,7 @@ void HashStoragePoolManager::RemoveBlock(PoolInstance &instance,
     }
     if (stats_collector_) {
         stats_collector_->OnBlockEviction(instance.pool_id, block, eviction_timestamp);
+        stats_collector_->OnBlockRetentionEviction(instance.pool_id, block, timestamp);
     }
     instance.index->Remove(block);
 }

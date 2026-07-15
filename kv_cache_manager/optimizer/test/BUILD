@@ -1,6 +1,16 @@
 package(default_visibility = ["//visibility:private"])
 
 cc_test(
+    name = "CacheRetentionTrackerTest",
+    srcs = ["cache_retention_tracker_test.cc"],
+    deps = [
+        "//kv_cache_manager/common:unittest",
+        "//kv_cache_manager/optimizer/analysis/tracker",
+        "//kv_cache_manager/optimizer/config",
+    ],
+)
+
+cc_test(
     name = "LruEvictionPolicyTest",
     srcs = [
         "lru_eviction_policy_test.cc",
@@ -27,6 +37,18 @@ cc_test(
         "//kv_cache_manager/optimizer/eviction_policy",
         "//kv_cache_manager/manager:cache_location_view",
         "//kv_cache_manager/data_storage:common_define",
+    ],
+)
+
+cc_test(
+    name = "PromoteLruEvictionPolicyTest",
+    srcs = [
+        "promote_lru_eviction_policy_test.cc",
+    ],
+    deps = [
+        "//kv_cache_manager/common:unittest",
+        "//kv_cache_manager/optimizer/config",
+        "//kv_cache_manager/optimizer/eviction_policy",
     ],
 )
 

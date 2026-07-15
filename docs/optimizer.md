@@ -5,7 +5,7 @@
 KVCacheManager Optimizer 是一个独立的缓存优化分析模块，通过回放 trace 数据来模拟缓存读写操作，评估不同驱逐策略和配置对缓存命中率的影响。
 
 **核心功能**：
-- 支持多种驱逐策略（LRU、RandomLRU、LeafAwareLRU、TTL）
+- 支持多种驱逐策略（LRU、RandomLRU、LeafAwareLRU、TTL、PromoteLRU）
 - 支持多种 trace 格式（Publisher Log、Qwen Bailian）
 - 提供详细的缓存命中率统计和分析
 - 支持多种可视化分析工具
@@ -68,7 +68,7 @@ bazel build //kv_cache_manager/optimizer:optimizer_main
 
 **可选配置项**：
 - `eviction_mode`: 1=GROUP_ROUGH, 2=INSTANCE_ROUGH, 3=INSTANCE_PRECISE
-- `eviction_policy_type`: lru、random_lru、leaf_aware_lru、ttl
+- `eviction_policy_type`: lru、random_lru、leaf_aware_lru、ttl、promote_lru
 - `tier_flows`: 多层时必填，按 `storages` 数组顺序配置相邻 tier edge；单层不配置
 
 ### TTL 时间语义说明
@@ -117,7 +117,7 @@ bazel run //kv_cache_manager/optimizer/analysis/script:tradeoff_analysis_run_by_
 **多策略对比分析**：
 ```bash
 bazel run //kv_cache_manager/optimizer/analysis/script:tradeoff_analysis_run_by_policies -- \
-    -c /path/to/config.json --eviction-policies lru random_lru leaf_aware_lru ttl
+    -c /path/to/config.json --eviction-policies lru random_lru leaf_aware_lru ttl promote_lru
 ```
 
 ## 扩展开发

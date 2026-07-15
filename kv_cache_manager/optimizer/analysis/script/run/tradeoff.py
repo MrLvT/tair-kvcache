@@ -23,6 +23,7 @@ Applicability:
 """
 
 import argparse
+import json
 import os
 import sys
 from collections import defaultdict
@@ -44,6 +45,68 @@ from plot.hit_rate_plot import plot_multi_instance_analysis
 
 def _policy_name(policy):
     return policy or "default_policy"
+
+
+def _warmup_payload(policy_name, warmup):
+    payload = {
+        "policies": {
+            policy_name: {
+                "max_blocks": int(warmup["max_blocks"]),
+                "instances": warmup["instances"],
+            }
+        }
+    }
+    if warmup.get("metric_start_ns") is not None:
+        payload["policies"][policy_name]["metric_start_ns"] = int(warmup["metric_start_ns"])
+    return payload
+
+
+def _load_warmup_json(path, policy_name):
+    with open(path, "r") as f:
+        payload = json.load(f)
+    policy_payload = payload.get("policies", {}).get(policy_name)
+    if not policy_payload:
+        raise RuntimeError("warmup json missing policy {}".format(policy_name))
+    return {
+        "max_blocks": int(policy_payload["max_blocks"]),
+        "instances": policy_payload.get("instances", {}),
+        "metric_start_ns": policy_payload.get("metric_start_ns"),
+    }
+
+
+def _merge_warmup_json(path, policy_name, warmup):
+    payload = {"policies": {}}
+    if path and os.path.exists(path):
+        with open(path, "r") as f:
+            payload = json.load(f)
+    payload.setdefault("policies", {})[policy_name] = _warmup_payload(policy_name, warmup)["policies"][policy_name]
+    with open(path, "w") as f:
+        json.dump(payload, f, indent=2, sort_keys=True)
+
+
+def _merge_capacity_results_json(path, policy_name, results, bytes_per_block_map):
+    payload = {"policies": {}}
+    if os.path.exists(path):
+        with open(path, "r") as f:
+            payload = json.load(f)
+    policy_results = payload.setdefault("policies", {}).setdefault(policy_name, {})
+    rep_bpb = next(iter(bytes_per_block_map.values()), 0)
+    for result in results:
+        capacity = int(result["capacity"])
+        point = {
+            "instances": result.get("instances", {}),
+        }
+        if rep_bpb > 0:
+            point["capacity_gb"] = capacity * rep_bpb / (1024 ** 3)
+        policy_results[str(capacity)] = point
+    with open(path, "w") as f:
+        json.dump(payload, f, indent=2, sort_keys=True)
+
+
+def _warmup_matches_metric_start(warmup, metric_start_ns):
+    if metric_start_ns is None:
+        return warmup.get("metric_start_ns") is None
+    return warmup.get("metric_start_ns") == metric_start_ns
 
 
 def _result_reaches_theoretical_target(result, theoretical_instances, hit_rate_type, ratio=0.99):
@@ -82,6 +145,7 @@ def _run_policy_until_target(
             bytes_per_block_map,
             max_workers=min(batch_size, len(batch)),
             save_csv_dir=csv_dir_arg,
+            metric_start_ns=args.metric_start_ns,
         )
         for raw in sorted(raw_results, key=lambda r: r["capacity"]):
             if not raw.get("success"):
@@ -221,11 +285,21 @@ def main():
                         help="Relative lower bound for generated capacity points, as a ratio of max cached blocks")
     parser.add_argument("--hit-rate-type", default="total",
                         choices=["total", "local", "remote", "all"])
+    parser.add_argument("--metric-start-ns", type=int, default=None,
+                        help="Only compute hit-rate metrics from this timestamp onward; replay still starts from trace beginning for warmup state")
     parser.add_argument("--max-workers", type=int, default=4)
     parser.add_argument("--save-csv", action="store_true",
                         help="保留每次运行的 CSV 文件")
     parser.add_argument("--skip-run", action="store_true",
                         help="跳过实验，从已有 CSV 目录加载数据")
+    parser.add_argument("--warmup-json", default=None,
+                        help="Path to read/write warmup metrics for isolated runs")
+    parser.add_argument("--warmup-only", action="store_true",
+                        help="Run only warmup and write --warmup-json/output warmup_result.json")
+    parser.add_argument("--capacity-points", type=int, nargs="+", default=None,
+                        help="Run only the provided raw block capacity points")
+    parser.add_argument("--no-plot", action="store_true",
+                        help="Skip plotting and only emit CSV/JSON results")
     parser.add_argument("--plot-timeseries", action="store_true",
                         help="为容量点生成时序图（需要 --save-csv 或 --skip-run）")
     parser.add_argument("--plot-capacity", type=int, nargs="+", default=None,
@@ -282,6 +356,9 @@ def main():
 
     output_dir = config.output_result_path()
     csv_save_dir = os.path.join(config.output_result_path(), "csv_results")
+    metadata_dir = os.path.dirname(args.warmup_json) if args.warmup_json else output_dir
+    warmup_json_path = args.warmup_json or os.path.join(metadata_dir, "warmup_result.json")
+    capacity_results_path = os.path.join(metadata_dir, "capacity_results.json")
     theoretical_by_policy = {}
 
     # ----------------------------------------------------------------
@@ -294,6 +371,11 @@ def main():
             sys.exit(1)
         if multi_policy and policies[0] is not None:
             results_by_policy = {p: results_by_policy[p] for p in policies if p in results_by_policy}
+        for policy_name, results in results_by_policy.items():
+            _merge_capacity_results_json(capacity_results_path, policy_name, results, bytes_per_block_map)
+        if args.warmup_json and os.path.exists(args.warmup_json):
+            for policy_name in results_by_policy:
+                theoretical_by_policy[policy_name] = _load_warmup_json(args.warmup_json, policy_name)["instances"]
     else:
         # Use first instance's bytes_per_block as a representative value for
         # printing the capacity range. Plotting still uses per-instance
@@ -312,13 +394,40 @@ def main():
             print("\n" + "=" * 60)
             print("Warmup and capacity sweep: {}".format(policy_name))
             print("=" * 60)
-            warmup = warmup_pass_with_metrics(args.config, -1, bytes_per_block_map, policy)
+            if args.warmup_json and os.path.exists(args.warmup_json):
+                warmup = _load_warmup_json(args.warmup_json, policy_name)
+                if _warmup_matches_metric_start(warmup, args.metric_start_ns):
+                    print("Loaded warmup metrics from {}".format(args.warmup_json))
+                else:
+                    print(
+                        "Warmup metrics in {} use metric_start_ns={}, rerunning for metric_start_ns={}".format(
+                            args.warmup_json, warmup.get("metric_start_ns"), args.metric_start_ns
+                        )
+                    )
+                    warmup = None
+            else:
+                warmup = None
+            if warmup is None:
+                warmup = warmup_pass_with_metrics(
+                    args.config, -1, bytes_per_block_map, policy,
+                    metric_start_ns=args.metric_start_ns,
+                )
+                if args.metric_start_ns is not None:
+                    warmup["metric_start_ns"] = args.metric_start_ns
+                _merge_warmup_json(warmup_json_path, policy_name, warmup)
+                print("Warmup metrics saved to {}".format(warmup_json_path))
             theoretical_by_policy[policy_name] = warmup["instances"]
             max_blocks = int(warmup["max_blocks"])
-            capacities = generate_capacity_list(
-                max_blocks, args.num_points, min_capacity_ratio=args.min_capacity_ratio)
-            if max_blocks not in capacities:
-                capacities.append(max_blocks)
+            if args.warmup_only:
+                results_by_policy[policy_name] = []
+                continue
+            if args.capacity_points:
+                capacities = sorted(set(int(cap) for cap in args.capacity_points))
+            else:
+                capacities = generate_capacity_list(
+                    max_blocks, args.num_points, min_capacity_ratio=args.min_capacity_ratio)
+                if max_blocks not in capacities:
+                    capacities.append(max_blocks)
             capacities = sorted(set(capacities))
             if not capacities:
                 print("Error: No valid capacity points generated (max_blocks={})".format(max_blocks))
@@ -336,6 +445,17 @@ def main():
                 csv_save_dir,
                 primary_hit_rate_type,
             )
+            _merge_capacity_results_json(
+                capacity_results_path,
+                policy_name,
+                results_by_policy[policy_name],
+                bytes_per_block_map,
+            )
+            print("Capacity results saved to {}".format(capacity_results_path))
+
+        if args.warmup_only:
+            print("\nWarmup-only complete!")
+            return
 
     # ----------------------------------------------------------------
     # 打印命中率表格
@@ -364,7 +484,9 @@ def main():
     axis_limits = {"x_min": args.x_min, "x_max": args.x_max, "y_min": args.y_min, "y_max": args.y_max}
     hit_types = ["total", "local", "remote"] if args.hit_rate_type == "all" else [args.hit_rate_type]
 
-    if len(actual_policies) == 1:
+    if args.no_plot:
+        print("\nPlotting skipped by --no-plot")
+    elif len(actual_policies) == 1:
         policy_name = actual_policies[0]
         for ht in hit_types:
             plot_single_policy_curves(

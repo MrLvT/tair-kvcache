@@ -8,6 +8,7 @@ struct InferSchedulingStrategy {
     static constexpr const char *kPreserveTrace = "preserve_trace";
     static constexpr const char *kRoundRobin = "round_robin";
     static constexpr const char *kPrefixHit = "prefix_hit";
+    static constexpr const char *kLoadBalance = "load_balance";
 };
 
 [[nodiscard]] bool IsSupportedInferSchedulingStrategy(const std::string &strategy);

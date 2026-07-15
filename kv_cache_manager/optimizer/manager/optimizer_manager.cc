@@ -9,6 +9,7 @@
 #include "kv_cache_manager/common/logger.h"
 #include "kv_cache_manager/meta/cache_location.h"
 #include "kv_cache_manager/optimizer/analysis/tracker/block_lifecycle_tracker.h"
+#include "kv_cache_manager/optimizer/analysis/tracker/cache_retention_tracker.h"
 #include "kv_cache_manager/optimizer/config/tier_config.h"
 #include "kv_cache_manager/optimizer/eviction_policy/policy_factory.h"
 #include "kv_cache_manager/optimizer/trace_loader/trace_util.h"
@@ -27,10 +28,14 @@ int64_t RequirePositiveInputLen(const char *api_name, int64_t input_len) {
 OptimizerManager::OptimizerManager(const OptimizerConfig &config,
                                    bool enable_lifecycle_tracking,
                                    bool enable_template_analysis,
-                                   HitRatePerspective hit_rate_perspective)
+                                   HitRatePerspective hit_rate_perspective,
+                                   bool enable_cache_retention_tracking,
+                                   std::unordered_map<std::string, std::string> instance_to_service)
     : config_(config)
     , enable_lifecycle_tracking_(enable_lifecycle_tracking)
     , enable_template_analysis_(enable_template_analysis)
+    , enable_cache_retention_tracking_(enable_cache_retention_tracking)
+    , instance_to_service_(std::move(instance_to_service))
     , hit_rate_perspective_(hit_rate_perspective) {}
 
 bool OptimizerManager::Init() {
@@ -62,6 +67,11 @@ bool OptimizerManager::Init() {
         KVCM_LOG_INFO("Lifecycle tracking enabled");
     } else {
         KVCM_LOG_DEBUG("Lifecycle tracking disabled (memory optimization)");
+    }
+
+    if (enable_cache_retention_tracking_) {
+        stats_collector_->EmplaceTracker<CacheRetentionTracker>(instance_to_service_);
+        KVCM_LOG_INFO("Cache retention tracking enabled");
     }
 
     size_t total_instances = 0;
@@ -394,6 +404,19 @@ bool OptimizerManager::ClearCache(const std::string &instance_id) {
         return false;
     }
     const bool cleared = indexer_manager_->ClearCache(instance_id);
+    if (cleared && optimizer_runner_) {
+        optimizer_runner_->ClearMambaState(instance_id);
+    }
+    return cleared;
+}
+
+bool OptimizerManager::ClearCacheAt(const std::string &instance_id, int64_t timestamp) {
+    if (!indexer_manager_) {
+        KVCM_LOG_ERROR("Indexer manager not initialized");
+        return false;
+    }
+    stats_collector_->UpdateTimestamp(instance_id, timestamp);
+    const bool cleared = indexer_manager_->ClearCacheAt(instance_id, timestamp);
     if (cleared && optimizer_runner_) {
         optimizer_runner_->ClearMambaState(instance_id);
     }

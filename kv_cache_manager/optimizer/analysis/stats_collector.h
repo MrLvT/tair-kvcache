@@ -61,6 +61,18 @@ public:
         }
     }
 
+    void OnBlockReadHit(const std::string &instance_id, BlockEntry *block, int64_t timestamp) {
+        for (auto &t : trackers_) {
+            t->OnBlockReadHit(instance_id, block, timestamp);
+        }
+    }
+
+    void OnBlockRetentionEviction(const std::string &instance_id, BlockEntry *block, int64_t timestamp) {
+        for (auto &t : trackers_) {
+            t->OnBlockRetentionEviction(instance_id, block, timestamp);
+        }
+    }
+
     // ---- 生命周期管理 ----
     void FinalizeAll(const std::string &instance_id, int64_t final_timestamp) {
         for (auto &t : trackers_) {
@@ -98,6 +110,9 @@ public:
     void UpdateTimestamp(const std::string &instance_id, int64_t timestamp) {
         auto &ts = last_trace_timestamp_[instance_id];
         ts = std::max(ts, timestamp);
+        for (auto &t : trackers_) {
+            t->OnTimestamp(instance_id, timestamp);
+        }
     }
 
     int64_t GetLastTimestamp(const std::string &instance_id) const {

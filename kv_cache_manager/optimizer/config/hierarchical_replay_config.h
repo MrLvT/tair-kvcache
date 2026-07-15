@@ -203,6 +203,7 @@ public:
     void ToRapidWriter(rapidjson::Writer<rapidjson::StringBuffer> &writer) const noexcept override;
 
     [[nodiscard]] const std::string &storage_pool_id() const { return storage_pool_id_; }
+    [[nodiscard]] const std::string &service_name() const { return service_name_; }
     [[nodiscard]] const std::string &engine_read_query_type() const { return engine_read_query_type_; }
     [[nodiscard]] const HierarchicalModelConfig &model() const { return model_; }
     [[nodiscard]] const std::vector<std::string> &infer_ids() const { return infer_ids_; }
@@ -214,6 +215,7 @@ public:
     [[nodiscard]] const StoragePoolFlowConfig &storage_pool_flow() const { return storage_pool_flow_; }
 
     void set_storage_pool_id(const std::string &storage_pool_id) { storage_pool_id_ = storage_pool_id; }
+    void set_service_name(const std::string &service_name) { service_name_ = service_name; }
     void set_engine_read_query_type(const std::string &query_type) { engine_read_query_type_ = query_type; }
     void set_model(const HierarchicalModelConfig &model) { model_ = model; }
     void set_infer_ids(const std::vector<std::string> &infer_ids) { infer_ids_ = infer_ids; }
@@ -226,6 +228,7 @@ public:
 
 private:
     std::string storage_pool_id_;
+    std::string service_name_;
     std::string engine_read_query_type_;
     HierarchicalModelConfig model_;
     std::vector<std::string> infer_ids_;
@@ -255,8 +258,10 @@ public:
         return engine_to_storage_pool_;
     }
     [[nodiscard]] const std::string &infer_scheduling_strategy() const { return infer_scheduling_strategy_; }
+    [[nodiscard]] int32_t infer_concurrency() const { return infer_concurrency_; }
     [[nodiscard]] bool infer_active_windows_from_trace() const { return infer_active_windows_from_trace_; }
     [[nodiscard]] bool enable_lifecycle_tracking() const { return enable_lifecycle_tracking_; }
+    [[nodiscard]] bool enable_cache_retention_tracking() const { return enable_cache_retention_tracking_; }
     [[nodiscard]] const std::string &cache_drop_event_file() const { return cache_drop_event_file_; }
     [[nodiscard]] const std::vector<InferClusterConfig> &infer_clusters() const { return infer_clusters_; }
 
@@ -271,8 +276,10 @@ public:
         engine_to_storage_pool_ = mapping;
     }
     void set_infer_scheduling_strategy(const std::string &strategy) { infer_scheduling_strategy_ = strategy; }
+    void set_infer_concurrency(int32_t concurrency) { infer_concurrency_ = concurrency; }
     void set_infer_active_windows_from_trace(bool enabled) { infer_active_windows_from_trace_ = enabled; }
     void set_enable_lifecycle_tracking(bool enabled) { enable_lifecycle_tracking_ = enabled; }
+    void set_enable_cache_retention_tracking(bool enabled) { enable_cache_retention_tracking_ = enabled; }
     void set_cache_drop_event_file(const std::string &path) { cache_drop_event_file_ = path; }
 
 private:
@@ -287,8 +294,10 @@ private:
     HierarchicalStoragePoolConfig storage_pool_;
     std::vector<EngineToStoragePoolMappingConfig> engine_to_storage_pool_;
     std::string infer_scheduling_strategy_ = "preserve_trace";
+    int32_t infer_concurrency_ = 1;
     bool infer_active_windows_from_trace_ = false;
     bool enable_lifecycle_tracking_ = false;
+    bool enable_cache_retention_tracking_ = false;
     std::string cache_drop_event_file_;
 };
 

@@ -1315,3 +1315,150 @@ TEST_F(HierarchicalReplayManagerTest, SeparatesIndependentPoolInstances) {
     EXPECT_EQ(hit_own_engine.storage_pool_hit_length, 0);
     EXPECT_EQ(hit_own_engine.total_hit_length, 1);
 }
+
+// ---------------------------------------------------------------------------
+// Load-balance scheduling tests
+// ---------------------------------------------------------------------------
+
+TEST_F(HierarchicalReplayManagerTest, LoadBalanceDistributesRequestsEvenly) {
+    // With a predictor that returns constant duration, requests should round-robin
+    // across engines since each request adds the same load.
+    const std::string root = GetTestTempRootPath() + "/hierarchical_replay_load_balance";
+    std::filesystem::create_directories(root);
+    HierarchicalReplayConfig config = CreateHierarchicalConfig(root);
+    config.set_infer_scheduling_strategy("load_balance");
+
+    OptTraceReplayConfig replay;
+    replay.set_mode(TraceReplayMode::REQUEST);
+    replay.set_write_delay_ns(1);
+    config.set_trace_replay_config(replay);
+
+    StoragePoolFlowConfig flow = CreateStoragePoolFlow();
+    config.set_infer_clusters({CreateInferClusterConfig(flow)});
+
+    // Write 4 requests at different timestamps, each with 2 tokens.
+    // All arrive sequentially with enough separation so previous prefills complete.
+    std::ofstream trace(config.trace_file_path());
+    for (int i = 0; i < 4; ++i) {
+        int64_t ts = (i + 1) * 1000;
+        trace << R"({"type":"request","instance_id":"engine_a","trace_id":"req_)" << i
+              << R"(","timestamp_ns":)" << ts
+              << R"(,"keys":[)" << (100 + i) << R"(],"input_len":16,"query_type":"batch_get"})" << "\n";
+    }
+    trace.close();
+
+    HierarchicalReplayManager manager(config);
+    // Constant prefill duration of 100ns — short enough that each completes before next request.
+    manager.SetPrefillDurationPredictor([](int64_t, int64_t) -> int64_t { return 100; });
+    ASSERT_TRUE(manager.Init());
+    manager.DirectRun();
+
+    // With constant cost and requests well-separated (1000ns apart, 100ns duration),
+    // load_balance should alternate: engine_a, engine_b, engine_a, engine_b.
+    // We verify by checking that both engines have data written to them.
+    // engine_a should have keys 100, 102 and engine_b should have keys 101, 103.
+    auto hit_a_100 = manager.GetCacheLocation("engine_a", "verify_a_100", 10000, {100}, 16, "batch_get");
+    auto hit_a_102 = manager.GetCacheLocation("engine_a", "verify_a_102", 10001, {102}, 16, "batch_get");
+    auto hit_b_101 = manager.GetCacheLocation("engine_b", "verify_b_101", 10002, {101}, 16, "batch_get");
+    auto hit_b_103 = manager.GetCacheLocation("engine_b", "verify_b_103", 10003, {103}, 16, "batch_get");
+
+    EXPECT_EQ(hit_a_100.engine_hit_length, 1);
+    EXPECT_EQ(hit_a_102.engine_hit_length, 1);
+    EXPECT_EQ(hit_b_101.engine_hit_length, 1);
+    EXPECT_EQ(hit_b_103.engine_hit_length, 1);
+
+    manager.AnalyzeResults();
+}
+
+TEST_F(HierarchicalReplayManagerTest, LoadBalanceSendsToLeastLoadedEngine) {
+    // When one engine has a long prefill, the next request should go to the other engine.
+    const std::string root = GetTestTempRootPath() + "/hierarchical_replay_load_balance_skew";
+    std::filesystem::create_directories(root);
+    HierarchicalReplayConfig config = CreateHierarchicalConfig(root);
+    config.set_infer_scheduling_strategy("load_balance");
+
+    OptTraceReplayConfig replay;
+    replay.set_mode(TraceReplayMode::REQUEST);
+    replay.set_write_delay_ns(1);
+    config.set_trace_replay_config(replay);
+
+    StoragePoolFlowConfig flow = CreateStoragePoolFlow();
+    config.set_infer_clusters({CreateInferClusterConfig(flow)});
+
+    // 3 requests arriving at ts=1000, 1001, 1002.
+    // Predictor returns a very long duration for the first request (key 200),
+    // so requests 2 and 3 should both go to engine_b.
+    std::ofstream trace(config.trace_file_path());
+    trace << R"({"type":"request","instance_id":"engine_a","trace_id":"req_0","timestamp_ns":1000,"keys":[200],"input_len":16,"query_type":"batch_get"})" << "\n";
+    trace << R"({"type":"request","instance_id":"engine_a","trace_id":"req_1","timestamp_ns":1001,"keys":[201],"input_len":16,"query_type":"batch_get"})" << "\n";
+    trace << R"({"type":"request","instance_id":"engine_a","trace_id":"req_2","timestamp_ns":1002,"keys":[202],"input_len":16,"query_type":"batch_get"})" << "\n";
+    trace.close();
+
+    HierarchicalReplayManager manager(config);
+    int call_count = 0;
+    manager.SetPrefillDurationPredictor([&call_count](int64_t, int64_t) -> int64_t {
+        call_count++;
+        // First call: very long prefill (engine stays busy).
+        // Subsequent calls: short prefill.
+        return (call_count == 1) ? 10000 : 1;
+    });
+    ASSERT_TRUE(manager.Init());
+    manager.DirectRun();
+
+    // req_0 → engine_a (least loaded, both at 0), adds 10000ns load.
+    // req_1 → engine_b (engine_a still has 10000ns load, engine_b has 0).
+    // req_2 → engine_b (engine_a still has ~10000ns load, engine_b has 1ns load).
+    auto hit_a_200 = manager.GetCacheLocation("engine_a", "verify_200", 20000, {200}, 16, "batch_get");
+    auto hit_b_201 = manager.GetCacheLocation("engine_b", "verify_201", 20001, {201}, 16, "batch_get");
+    auto hit_b_202 = manager.GetCacheLocation("engine_b", "verify_202", 20002, {202}, 16, "batch_get");
+
+    EXPECT_EQ(hit_a_200.engine_hit_length, 1);
+    EXPECT_EQ(hit_b_201.engine_hit_length, 1);
+    EXPECT_EQ(hit_b_202.engine_hit_length, 1);
+
+    // Verify engine_a does NOT have keys 201, 202
+    auto miss_a_201 = manager.GetCacheLocation("engine_a", "miss_201", 20003, {201}, 16, "batch_get");
+    auto miss_a_202 = manager.GetCacheLocation("engine_a", "miss_202", 20004, {202}, 16, "batch_get");
+    EXPECT_EQ(miss_a_201.engine_hit_length, 0);
+    EXPECT_EQ(miss_a_202.engine_hit_length, 0);
+
+    manager.AnalyzeResults();
+}
+
+TEST_F(HierarchicalReplayManagerTest, LoadBalanceFallsBackToUnitCostWithoutPredictor) {
+    // Without a predictor set, load_balance should still work using unit cost per request.
+    const std::string root = GetTestTempRootPath() + "/hierarchical_replay_load_balance_no_predictor";
+    std::filesystem::create_directories(root);
+    HierarchicalReplayConfig config = CreateHierarchicalConfig(root);
+    config.set_infer_scheduling_strategy("load_balance");
+
+    OptTraceReplayConfig replay;
+    replay.set_mode(TraceReplayMode::REQUEST);
+    replay.set_write_delay_ns(1);
+    config.set_trace_replay_config(replay);
+
+    StoragePoolFlowConfig flow = CreateStoragePoolFlow();
+    config.set_infer_clusters({CreateInferClusterConfig(flow)});
+
+    std::ofstream trace(config.trace_file_path());
+    for (int i = 0; i < 4; ++i) {
+        int64_t ts = (i + 1) * 1000;
+        trace << R"({"type":"request","instance_id":"engine_a","trace_id":"req_)" << i
+              << R"(","timestamp_ns":)" << ts
+              << R"(,"keys":[)" << (300 + i) << R"(],"input_len":16,"query_type":"batch_get"})" << "\n";
+    }
+    trace.close();
+
+    HierarchicalReplayManager manager(config);
+    // No predictor set — should use unit cost fallback.
+    ASSERT_TRUE(manager.Init());
+    manager.DirectRun();
+
+    // With unit cost and well-separated requests, should alternate engines.
+    auto hit_a_300 = manager.GetCacheLocation("engine_a", "verify_300", 10000, {300}, 16, "batch_get");
+    auto hit_b_301 = manager.GetCacheLocation("engine_b", "verify_301", 10001, {301}, 16, "batch_get");
+    EXPECT_EQ(hit_a_300.engine_hit_length, 1);
+    EXPECT_EQ(hit_b_301.engine_hit_length, 1);
+
+    manager.AnalyzeResults();
+}

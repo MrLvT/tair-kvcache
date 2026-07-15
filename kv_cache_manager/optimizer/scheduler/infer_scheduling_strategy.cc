@@ -4,7 +4,7 @@ namespace kv_cache_manager {
 
 bool IsSupportedInferSchedulingStrategy(const std::string &strategy) {
     return strategy == InferSchedulingStrategy::kPreserveTrace || strategy == InferSchedulingStrategy::kRoundRobin ||
-           strategy == InferSchedulingStrategy::kPrefixHit;
+           strategy == InferSchedulingStrategy::kPrefixHit || strategy == InferSchedulingStrategy::kLoadBalance;
 }
 
 bool UsesTraceInferAssignment(const std::string &strategy) {

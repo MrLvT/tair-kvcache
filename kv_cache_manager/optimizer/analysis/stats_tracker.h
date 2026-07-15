@@ -27,6 +27,13 @@ public:
     // ---- Block级事件 ----
     virtual void OnBlockBirth(const std::string &instance_id, BlockEntry *block, int64_t timestamp) {}
     virtual void OnBlockEviction(const std::string &instance_id, BlockEntry *block, int64_t timestamp) {}
+    virtual void OnBlockReadHit(const std::string &instance_id, BlockEntry *block, int64_t timestamp) {}
+    // Physical removal time used by retention statistics. Lifecycle tracking may use a
+    // logical TTL expiry timestamp in OnBlockEviction, so the two events are separate.
+    virtual void OnBlockRetentionEviction(const std::string &instance_id,
+                                          BlockEntry *block,
+                                          int64_t timestamp) {}
+    virtual void OnTimestamp(const std::string &instance_id, int64_t timestamp) {}
 
     // ---- 生命周期管理 ----
     virtual void Finalize(const std::string &instance_id, int64_t final_timestamp) {}

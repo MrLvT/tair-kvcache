@@ -29,6 +29,7 @@ py_library(
         "plot/__init__.py",
         "plot/hit_rate_plot.py",
         "plot/lifecycle_plot.py",
+        "plot/cache_retention_plot.py",
         "plot/radix_tree_plot.py",
     ],
     imports = ["."],
@@ -63,6 +64,14 @@ py_binary(
     deps = [":utils_lib", ":plot_lib"],
 )
 
+# Lightweight infinite-capacity warmup checker.  It intentionally avoids the
+# pybind optimizer path so it can be used to cross-check tradeoff warmup output.
+py_binary(
+    name = "check_warmup_prefix",
+    srcs = ["run/check_warmup_prefix.py"],
+    main = "run/check_warmup_prefix.py",
+)
+
 # RadixTree 导出 + 可视化
 py_binary(
     name = "export_tree",
@@ -77,6 +86,14 @@ py_binary(
     srcs = ["run/analyze_lifecycle.py"],
     main = "run/analyze_lifecycle.py",
     deps = [":analysis_lib", ":plot_lib"],
+)
+
+# Hierarchical replay with P2P / load_balance scheduling
+py_binary(
+    name = "hierarchical_replay",
+    srcs = ["run/hierarchical_replay.py"],
+    main = "run/hierarchical_replay.py",
+    deps = [":utils_lib"],
 )
 
 # Per-inference-instance replay: one optimizer process per inference trace plus token-hit-rate aggregation
@@ -94,4 +111,45 @@ py_library(
         "run/multi_infer_replay.py",
     ],
     imports = ["."],
+)
+
+py_library(
+    name = "deepseek_trace_lib",
+    srcs = [
+        "run/prepare_deepseek_trace.py",
+    ],
+    imports = ["run"],
+)
+
+py_binary(
+    name = "prepare_deepseek_trace",
+    srcs = ["run/prepare_deepseek_trace.py"],
+    main = "run/prepare_deepseek_trace.py",
+)
+
+py_binary(
+    name = "split_deepseek_trace_by_service",
+    srcs = ["run/split_deepseek_trace_by_service.py"],
+    main = "run/split_deepseek_trace_by_service.py",
+    deps = [":deepseek_trace_lib"],
+)
+
+py_binary(
+    name = "prepare_deepseek_stream_config",
+    srcs = ["run/prepare_deepseek_stream_config.py"],
+    main = "run/prepare_deepseek_stream_config.py",
+    deps = [":deepseek_trace_lib"],
+)
+
+py_binary(
+    name = "stream_deepseek_optimizer_trace",
+    srcs = ["run/stream_deepseek_optimizer_trace.py"],
+    main = "run/stream_deepseek_optimizer_trace.py",
+    deps = [":deepseek_trace_lib"],
+)
+
+py_binary(
+    name = "prepare_tokenized_with_ids_trace",
+    srcs = ["run/prepare_tokenized_with_ids_trace.py"],
+    main = "run/prepare_tokenized_with_ids_trace.py",
 )

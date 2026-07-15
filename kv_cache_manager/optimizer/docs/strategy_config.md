@@ -13,7 +13,7 @@ optimizer 按仿真问题分为三个标准入口：
 | engine-local + storage pool | `hierarchical_replay_main` | 需要完整模拟推理实例本地多层缓存、同集群 P2P 读与 KVCM/storage pool 池化；trace 可指定推理实例，也可由 scheduler 分配 | `engine_instance` = 推理实例；`storage_pool_instance` = KVCM/storage pool instance | `local` = engine 本地命中；`peer` = 同集群 peer 命中；`remote` = storage pool 命中 |
 
 `hierarchical_replay_main` 是否使用调度器由 `infer_scheduling_strategy` 决定：trace 已指定推理实例时使用 `preserve_trace`；需要模拟调度时使用 `round_robin` 或 `prefix_hit`。
-hierarchical 模式使用 `infer_clusters + storage_pool` 描述拓扑：同一个 storage pool 下的同构推理实例只写一份 model、tier 列表和层间 flow，再列出 `infer_ids`；`infer_eviction_params` 单独定义推理侧本地缓存的驱逐模式；`infer_clusters[].engine_read_query_type` 定义 engine-local 本地读语义，必须显式配置为 `prefix_match` 或 `batch_get`；`infer_clusters[].tiers` 的数组顺序就是推理实例本地层级顺序，第一项是写入口；`infer_clusters[].p2p_read_flows` 可选定义同集群 peer read；`infer_clusters[].active_windows` 可选定义推理实例在线时间段，影响 `round_robin`、`prefix_hit` 和 P2P peer 选择；`infer_active_windows_from_trace=true` 时，trace 的 `instance_id` 只用于推导在线窗口，请求仍按 `infer_scheduling_strategy` 调度；`infer_clusters[].storage_pool_flow` 描述该推理实例集群写入 storage pool 的边策略。`storage_pool` 是单层 hash pool 专用配置，不复用普通 optimizer 的 `instance_groups/storages` 形态。开启 `enable_lifecycle_tracking=true` 后，推理侧输出到 `output_result_path/infer`，storage pool 输出到 `storage_pool.output_result_path`。
+hierarchical 模式使用 `infer_clusters + storage_pool` 描述拓扑：同一个 storage pool 下的同构推理实例只写一份 model、tier 列表和层间 flow，再列出 `infer_ids`；`infer_eviction_params` 单独定义推理侧本地缓存的驱逐模式；`infer_clusters[].engine_read_query_type` 定义 engine-local 本地读语义，必须显式配置为 `prefix_match` 或 `batch_get`；`infer_clusters[].tiers` 的数组顺序就是推理实例本地层级顺序，第一项是写入口；`infer_clusters[].p2p_read_flows` 可选定义同集群 peer read；`infer_clusters[].active_windows` 可选定义推理实例在线时间段，影响 `round_robin`、`prefix_hit` 和 P2P peer 选择；`infer_active_windows_from_trace=true` 时，trace 的 `instance_id` 只用于推导在线窗口，请求仍按 `infer_scheduling_strategy` 调度；`infer_clusters[].storage_pool_flow` 描述该推理实例集群写入 storage pool 的边策略。`storage_pool` 是单层 hash pool 专用配置，不复用普通 optimizer 的 `instance_groups/storages` 形态。开启 `enable_lifecycle_tracking=true` 后，推理侧输出到 `output_result_path/infer`，storage pool 输出到 `storage_pool.output_result_path`。开启 `enable_cache_retention_tracking=true` 时，`infer_clusters[].service_name` 必填，用于把 per-instance 原始淘汰样本聚合为 service 分钟统计。
 
 hierarchical 写 storage pool 时，三种策略都以 engine pool-source 层为准：多层 engine 使用最后一层，非分层 engine 使用 shared 层。write-through 写入本次实际传到 source 层的 block，包含直接写穿和 engine 内部驱逐下沉到 source 层的 block；cascading 写入从 engine 完全驱逐出去的 block；selective 写入本次触达到 source 层且 write touch 达阈值的 block。storage pool 只记录真实进入 pool 的 block key。
 
@@ -378,7 +378,7 @@ Write trace：
 | `instance_id` | string | trace 中的实例 ID，必须与 trace 行内 `instance_id` 匹配 |
 | `block_size` | int | 每个 block 的 token 数。token hit rate 会用它把命中 block 转为命中 token |
 | `bytes_per_token` | int | 单 token KV 大小。`bytes_per_block = block_size * bytes_per_token` |
-| `eviction_policy_type` | string | `lru`、`random_lru`、`leaf_aware_lru`、`ttl` |
+| `eviction_policy_type` | string | `lru`、`random_lru`、`leaf_aware_lru`、`ttl`、`promote_lru` |
 | `eviction_policy_params` | object | 策略参数，见下文 |
 
 ## eviction_policy_params
@@ -425,6 +425,27 @@ Write trace：
 | `fallback_on_pressure=false` | 纯 TTL，只清理过期 block；容量压力不会触发 LRU 兜底 |
 
 TTL 只在 `eviction_policy_type="ttl"` 时执行。非 TTL 策略会忽略 `ttl_config` 的过期清理语义。
+
+### promote_lru
+
+```json
+{
+  "enabled_tiers": []
+}
+```
+
+`promote_lru` 用于评估突发流量下首次到达 block 抢占已复用 block 的问题。每个 instance、每个 tier 独立维护两个 LRU 队列：
+
+| 队列 | 说明 |
+|---|---|
+| `probation` | 首次进入当前 tier 且尚未产生有效 read hit 的 block，容量不足时优先淘汰 |
+| `protected` | 驻留期间产生有效 read hit 的 block，`probation` 不足时才淘汰 |
+
+| 字段 | 说明 |
+|---|---|
+| `enabled_tiers` | 为空或缺省表示所有 tier 启用 promote 语义；非空时只有列出的 tier 名启用，其他 tier 在该策略下退化为普通 LRU。非分层模式的 tier 名为 `shared` |
+
+提升语义跟 prefix cache 一致：只有有效 read access 才会把 block 从 `probation` 提升到 `protected`。在 `prefix_match` 查询中，如果前面的 block miss，后续 block 即使多次写入或 touch，也不会因为这些非有效前缀命中而提升。写回已有 block、write propagation、shadow write touch 只刷新 block 在当前队列中的 LRU 位置，不触发提升。
 
 ## 标准多推理实例回放
 

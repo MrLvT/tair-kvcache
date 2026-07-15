@@ -126,7 +126,7 @@ def parse_args():
     parser.add_argument("--block-size", type=int, default=16, help="Block size in tokens")
     parser.add_argument("--bytes-per-token", type=int, default=512, help="Bytes per token")
     parser.add_argument("--eviction-policy", default="lru",
-                        choices=["lru", "random_lru", "leaf_aware_lru", "ttl"],
+                        choices=["lru", "random_lru", "leaf_aware_lru", "ttl", "promote_lru"],
                         help="Eviction policy per instance")
     parser.add_argument("--eviction-policy-params", default="",
                         help="JSON object overriding eviction_policy_params")
@@ -528,6 +528,8 @@ def _resolve_policy_params(policy: str, override_json: str) -> dict:
         return {"sample_rate": 1.0}
     if policy == "ttl":
         return {"fallback_on_pressure": True}
+    if policy == "promote_lru":
+        return {"enabled_tiers": []}
     return {
         "sample_rate": 1.0,
         "shard_count": 1,

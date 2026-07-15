@@ -21,6 +21,9 @@ public:
         (void)refresh_ttl_on_read;
         OnBlockAccessed(block, timestamp);
     }
+    virtual void OnBlockTouched(BlockEntry *block, int64_t timestamp) {
+        OnBlockAccessedWithOptions(block, timestamp, false);
+    }
     virtual std::vector<BlockEntry *> EvictBlocks(size_t num_blocks) = 0;
     virtual std::vector<BlockEntry *> EvictExpired() { return {}; }
     virtual void Clear() = 0;

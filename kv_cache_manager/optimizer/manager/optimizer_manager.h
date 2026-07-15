@@ -1,5 +1,7 @@
 #pragma once
 #include <memory>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "kv_cache_manager/optimizer/analysis/stats_collector.h"
@@ -22,7 +24,9 @@ public:
     OptimizerManager(const OptimizerConfig &config,
                      bool enable_lifecycle_tracking = false,
                      bool enable_template_analysis = false,
-                     HitRatePerspective hit_rate_perspective = HitRatePerspective::KVCM_L3);
+                     HitRatePerspective hit_rate_perspective = HitRatePerspective::KVCM_L3,
+                     bool enable_cache_retention_tracking = false,
+                     std::unordered_map<std::string, std::string> instance_to_service = {});
     ~OptimizerManager() = default;
     bool Init();
 
@@ -71,6 +75,7 @@ public:
 
     // 清空指定实例的缓存（不重置统计结果）
     bool ClearCache(const std::string &instance_id);
+    bool ClearCacheAt(const std::string &instance_id, int64_t timestamp);
 
     // 清空所有实例的缓存（不重置统计结果）
     void ClearAllCaches();
@@ -103,6 +108,8 @@ private:
 
     bool enable_lifecycle_tracking_ = false;
     bool enable_template_analysis_ = false;
+    bool enable_cache_retention_tracking_ = false;
+    std::unordered_map<std::string, std::string> instance_to_service_;
     HitRatePerspective hit_rate_perspective_ = HitRatePerspective::KVCM_L3;
 };
 } // namespace kv_cache_manager

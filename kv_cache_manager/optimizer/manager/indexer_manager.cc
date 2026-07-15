@@ -166,6 +166,19 @@ bool OptIndexerManager::ClearCache(const std::string &instance_id) {
     return true;
 }
 
+bool OptIndexerManager::ClearCacheAt(const std::string &instance_id, int64_t timestamp) {
+    auto indexer = GetOptIndexer(instance_id);
+    if (!indexer) {
+        KVCM_LOG_ERROR("Optimizer indexer not found for instance_id: %s", instance_id.c_str());
+        return false;
+    }
+    indexer->ClearAt(timestamp);
+    KVCM_LOG_INFO("Cleared cache for instance_id: %s at timestamp: %lld",
+                  instance_id.c_str(),
+                  static_cast<long long>(timestamp));
+    return true;
+}
+
 void OptIndexerManager::ClearAllCaches() {
     for (const auto &[instance_id, indexer] : opt_indexer_map_) {
         if (indexer) {

@@ -54,7 +54,9 @@ struct HashStoragePoolReadRequest {
 class HashStoragePoolManager {
 public:
     explicit HashStoragePoolManager(const HierarchicalStoragePoolConfig &config,
-                                    bool enable_lifecycle_tracking = false);
+                                    bool enable_lifecycle_tracking = false,
+                                    bool enable_cache_retention_tracking = false,
+                                    std::unordered_map<std::string, std::string> instance_to_service = {});
 
     bool Init();
 
@@ -127,6 +129,8 @@ private:
     HierarchicalStoragePoolConfig config_;
     OptimizerConfig export_config_;
     bool enable_lifecycle_tracking_ = false;
+    bool enable_cache_retention_tracking_ = false;
+    std::unordered_map<std::string, std::string> instance_to_service_;
     std::shared_ptr<StatsCollector> stats_collector_;
     std::unordered_map<std::string, PoolGroup> groups_;
     std::unordered_map<std::string, PoolInstance> instances_;

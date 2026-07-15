@@ -231,6 +231,7 @@ def warmup_pass(
     warmup_capacity: int,
     bytes_per_block_map: Dict[str, int],
     policy: str = None,
+    metric_start_ns: int = None,
     enable_lifecycle_tracking: bool = False,
     enable_template_analysis: bool = False,
 ) -> int:
@@ -245,6 +246,7 @@ def warmup_pass(
         warmup_capacity,
         bytes_per_block_map,
         policy,
+        metric_start_ns,
         enable_lifecycle_tracking,
         enable_template_analysis,
     )["max_blocks"]
@@ -255,6 +257,7 @@ def warmup_pass_with_metrics(
     warmup_capacity: int,
     bytes_per_block_map: Dict[str, int],
     policy: str = None,
+    metric_start_ns: int = None,
     enable_lifecycle_tracking: bool = False,
     enable_template_analysis: bool = False,
 ) -> dict:
@@ -300,7 +303,7 @@ def warmup_pass_with_metrics(
             max_blocks = max(max_blocks, int(df["CachedBlocksAllInstances"].max()))
             total_acc_write = max(total_acc_write, int(df["AccWriteBlocks"].iloc[-1]) if "AccWriteBlocks" in df.columns else 0)
             bpb = bytes_per_block_map.get(iid, 0)
-            metrics = parse_instance_metrics(csv_file, bpb)
+            metrics = parse_instance_metrics(csv_file, bpb, metric_start_ns)
             if metrics is None:
                 continue
             instance_metrics[iid] = {
@@ -338,6 +341,7 @@ def run_single_experiment(
     total_exps: int,
     bytes_per_block_map: Dict[str, int],
     save_csv_to: str = None,
+    metric_start_ns: int = None,
     enable_lifecycle_tracking: bool = False,
     enable_template_analysis: bool = False,
 ) -> dict:
@@ -379,7 +383,7 @@ def run_single_experiment(
         instance_metrics = {}
         for iid, csv_file in csv_map.items():
             bpb = bytes_per_block_map.get(iid, 0)
-            metrics = parse_instance_metrics(csv_file, bpb)
+            metrics = parse_instance_metrics(csv_file, bpb, metric_start_ns)
             if metrics is None:
                 continue
             instance_metrics[iid] = {
@@ -414,6 +418,7 @@ def run_experiments_parallel(
     bytes_per_block_map: Dict[str, int],
     max_workers: int = 4,
     save_csv_dir: str = None,
+    metric_start_ns: int = None,
     enable_lifecycle_tracking: bool = False,
     enable_template_analysis: bool = False,
 ) -> List[dict]:
@@ -440,7 +445,7 @@ def run_experiments_parallel(
             config_path, capacity, policy,
             i + 1, len(experiments),
             bytes_per_block_map,
-            csv_subdir, enable_lifecycle_tracking,
+            csv_subdir, metric_start_ns, enable_lifecycle_tracking,
             enable_template_analysis,
         ))
 

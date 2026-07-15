@@ -49,6 +49,10 @@ cache_blocks = capacity_GB * 1024^3 / bytes_per_block
 | `selective_write_threshold` | 正整数 | selective 下写低层需要的 write touch 次数 |
 | promote/fill | 读路径触发 | 低层或 pool 命中后是否回填高层 |
 
+## 驱逐策略
+
+`promote_lru` 用于突发流量实验。它每个 instance/tier 独立维护首次到达队列和已有效复用队列，容量不足时优先淘汰首次到达队列。配置 `enabled_tiers` 时必须确认 tier 名称是否与 `storages[].unique_name` 或 hierarchical `tiers[].name` 一致；缺省或空数组表示所有 tier 启用。提升只跟有效 read access 走，prefix 前面未命中时，后续 block 的重复到达不算有效提升。
+
 ## 在线拓扑
 
 当某个 infer instance 只在某个时间段可被调度或 P2P 读取时，使用 `active_windows`。当某个 instance 的 cache 需要在特定时间被清空时，使用 cache drop event。

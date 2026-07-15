@@ -3,6 +3,7 @@
 #include <memory>
 #include <string>
 #include <variant>
+#include <vector>
 
 #include "kv_cache_manager/common/jsonizable.h"
 #include "kv_cache_manager/optimizer/config/types.h"
@@ -48,7 +49,18 @@ struct TtlParams : public Jsonizable {
     }
 };
 
-using EvictionPolicyParam = std::variant<LruParams, RandomLruParams, TtlParams>;
+struct PromoteLruParams : public Jsonizable {
+    std::vector<std::string> enabled_tiers;
+    bool FromRapidValue(const rapidjson::Value &v) override {
+        KVCM_JSON_GET_DEFAULT_MACRO(v, "enabled_tiers", enabled_tiers, std::vector<std::string>{});
+        return true;
+    }
+    void ToRapidWriter(rapidjson::Writer<rapidjson::StringBuffer> &writer) const noexcept override {
+        Put(writer, "enabled_tiers", enabled_tiers);
+    }
+};
+
+using EvictionPolicyParam = std::variant<LruParams, RandomLruParams, TtlParams, PromoteLruParams>;
 
 class EvictionConfig : public Jsonizable {
 public:

@@ -96,14 +96,44 @@ bool HierarchicalReplayManager::Init() {
     next_cache_drop_event_index_ = 0;
 
     const bool enable_lifecycle_tracking = config_.enable_lifecycle_tracking();
+    const bool enable_cache_retention_tracking = config_.enable_cache_retention_tracking();
+    std::unordered_map<std::string, std::string> engine_to_service;
+    std::unordered_map<std::string, std::string> pool_to_service;
+    if (enable_cache_retention_tracking) {
+        for (const auto &cluster : config_.infer_clusters()) {
+            if (cluster.service_name().empty()) {
+                KVCM_LOG_ERROR("Cache retention requires infer_clusters[].service_name");
+                return false;
+            }
+            for (const auto &infer_id : cluster.infer_ids()) {
+                engine_to_service[infer_id] = cluster.service_name();
+            }
+            const auto [it, inserted] = pool_to_service.emplace(cluster.storage_pool_id(), cluster.service_name());
+            if (!inserted && it->second != cluster.service_name()) {
+                KVCM_LOG_ERROR("Cache retention requires one service per storage_pool_id: %s maps to both %s and %s",
+                               cluster.storage_pool_id().c_str(),
+                               it->second.c_str(),
+                               cluster.service_name().c_str());
+                return false;
+            }
+        }
+    }
     engine_manager_ = std::make_unique<OptimizerManager>(
-        config_.engine_config(), enable_lifecycle_tracking, false, HitRatePerspective::ENGINE_LOCAL);
+        config_.engine_config(),
+        enable_lifecycle_tracking,
+        false,
+        HitRatePerspective::ENGINE_LOCAL,
+        enable_cache_retention_tracking,
+        engine_to_service);
     if (!engine_manager_->Init()) {
         KVCM_LOG_ERROR("Hierarchical replay failed to initialize engine manager.");
         return false;
     }
 
-    storage_pool_manager_ = std::make_unique<HashStoragePoolManager>(config_.storage_pool(), enable_lifecycle_tracking);
+    storage_pool_manager_ = std::make_unique<HashStoragePoolManager>(config_.storage_pool(),
+                                                                     enable_lifecycle_tracking,
+                                                                     enable_cache_retention_tracking,
+                                                                     pool_to_service);
     if (!storage_pool_manager_->Init()) {
         KVCM_LOG_ERROR("Hierarchical replay failed to initialize storage pool manager.");
         return false;
@@ -273,6 +303,7 @@ bool HierarchicalReplayManager::ValidateAndBuildMappings() {
     }
     infer_engine_scheduler_.SetEngineInstanceIds(std::move(engine_instance_ids));
     infer_engine_scheduler_.SetActiveWindows(active_windows);
+    infer_engine_scheduler_.SetConcurrencyPerEngine(config_.infer_concurrency());
     return true;
 }
 
@@ -398,11 +429,17 @@ void HierarchicalReplayManager::DirectRun() {
     auto traces = StandardTraceLoader::LoadFromFile(config_.trace_file_path(), config_.trace_replay_config().mode());
     TraceTimeSorter::SortTracesByTimestamp(traces);
     if (config_.infer_active_windows_from_trace() ||
-        (config_.infer_scheduling_strategy() == "preserve_trace" && !infer_engine_scheduler_.has_active_windows())) {
+        (!infer_engine_scheduler_.has_active_windows() &&
+         (config_.infer_scheduling_strategy() == "preserve_trace" ||
+          config_.infer_scheduling_strategy() == "load_balance"))) {
         infer_engine_scheduler_.BuildTraceActiveWindows(traces, write_delay_ns_, true);
     }
     if (config_.infer_scheduling_strategy() == "prefix_hit") {
         RunTracesWithPrefixHitScheduling(traces);
+        return;
+    }
+    if (config_.infer_scheduling_strategy() == "load_balance") {
+        RunTracesWithLoadBalanceScheduling(traces);
         return;
     }
     infer_engine_scheduler_.ScheduleTraces(config_.infer_scheduling_strategy(), traces);
@@ -447,6 +484,85 @@ void HierarchicalReplayManager::RunTracesWithPrefixHitScheduling(
         RunTrace(trace);
     }
     ApplyRemainingCacheDropEvents();
+    FlushAllPendingWrites();
+}
+
+void HierarchicalReplayManager::SetPrefillDurationPredictor(PrefillDurationPredictor predictor) {
+    infer_engine_scheduler_.SetPrefillDurationPredictor(std::move(predictor));
+}
+
+void HierarchicalReplayManager::RunTracesWithLoadBalanceScheduling(
+    const std::vector<std::shared_ptr<OptimizerSchemaTrace>> &traces) {
+    const auto &engine_instance_ids = infer_engine_scheduler_.engine_instance_ids();
+    if (engine_instance_ids.empty()) {
+        throw std::runtime_error("load_balance scheduling requires at least one engine instance");
+    }
+
+    infer_engine_scheduler_.ResetLoadState();
+    pending_writes_ = {};
+    next_pending_write_sequence_ = 0;
+    size_t request_idx = 0;
+    std::string current_engine_instance_id = engine_instance_ids.front();
+
+    for (const auto &trace : traces) {
+        if (!trace) {
+            continue;
+        }
+        FlushPendingWritesThrough(trace->timestamp_ns());
+
+        if (auto request_trace = std::dynamic_pointer_cast<RequestSchemaTrace>(trace)) {
+            // 1. Choose engine with least inflight load
+            current_engine_instance_id = infer_engine_scheduler_.ChooseLoadBalanceEngineInstance(
+                request_trace->timestamp_ns(), request_idx);
+            request_trace->set_instance_id(current_engine_instance_id);
+            request_idx++;
+
+            // 2. Execute read to get cache hit info
+            const auto hit_res = GetCacheLocation(current_engine_instance_id,
+                                                  request_trace->trace_id(),
+                                                  request_trace->timestamp_ns(),
+                                                  request_trace->keys(),
+                                                  request_trace->input_len(),
+                                                  request_trace->query_type());
+
+            // 3. Predict prefill duration and record load
+            int64_t prefill_duration_ns = 1; // fallback: unit cost per request
+            if (infer_engine_scheduler_.has_prefill_duration_predictor()) {
+                prefill_duration_ns = infer_engine_scheduler_.prefill_duration_predictor()(
+                    request_trace->input_len(), hit_res.total_hit_length);
+            }
+            infer_engine_scheduler_.RecordPrefillStart(
+                current_engine_instance_id, request_trace->timestamp_ns(), prefill_duration_ns);
+
+            // 4. Schedule the delayed write
+            ScheduleRequestWrite(*request_trace);
+
+        } else if (auto get_trace = std::dynamic_pointer_cast<GetLocationSchemaTrace>(trace)) {
+            current_engine_instance_id = infer_engine_scheduler_.ChooseLoadBalanceEngineInstance(
+                get_trace->timestamp_ns(), request_idx);
+            get_trace->set_instance_id(current_engine_instance_id);
+            request_idx++;
+
+            const auto hit_res = GetCacheLocation(current_engine_instance_id,
+                                                  get_trace->trace_id(),
+                                                  get_trace->timestamp_ns(),
+                                                  get_trace->keys(),
+                                                  get_trace->input_len(),
+                                                  get_trace->query_type());
+
+            int64_t prefill_duration_ns = 1;
+            if (infer_engine_scheduler_.has_prefill_duration_predictor()) {
+                prefill_duration_ns = infer_engine_scheduler_.prefill_duration_predictor()(
+                    get_trace->input_len(), hit_res.total_hit_length);
+            }
+            infer_engine_scheduler_.RecordPrefillStart(
+                current_engine_instance_id, get_trace->timestamp_ns(), prefill_duration_ns);
+
+        } else if (auto write_trace = std::dynamic_pointer_cast<WriteCacheSchemaTrace>(trace)) {
+            write_trace->set_instance_id(current_engine_instance_id);
+            RunTrace(trace);
+        }
+    }
     FlushAllPendingWrites();
 }
 
@@ -564,7 +680,7 @@ void HierarchicalReplayManager::ApplyCacheDropEvent(const CacheDropEvent &event)
         throw std::runtime_error("HierarchicalReplayManager is not initialized");
     }
     const std::string &cluster_id = ClusterForEngine(event.instance_id);
-    if (!engine_manager_->ClearCache(event.instance_id)) {
+    if (!engine_manager_->ClearCacheAt(event.instance_id, event.timestamp_ns)) {
         throw std::runtime_error("Failed to drop engine cache for instance_id: " + event.instance_id);
     }
     p2p_tracker_.RemoveInfer(cluster_id, event.instance_id);

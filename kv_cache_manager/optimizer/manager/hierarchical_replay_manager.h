@@ -37,6 +37,10 @@ public:
     void RunTrace(const std::shared_ptr<OptimizerSchemaTrace> &trace);
     void AnalyzeResults();
 
+    // Set the ML predictor for prefill duration. Required when using load_balance scheduling.
+    // The callback receives (input_len, cache_hit_len) and returns predicted prefill time in nanoseconds.
+    void SetPrefillDurationPredictor(PrefillDurationPredictor predictor);
+
     HierarchicalGetCacheLocationRes GetCacheLocation(const std::string &engine_instance_id,
                                                      const std::string &trace_id,
                                                      int64_t timestamp,
@@ -108,6 +112,7 @@ private:
     bool ValidateAndBuildMappings();
     std::vector<CacheDropEvent> LoadCacheDropEvents() const;
     void RunTracesWithPrefixHitScheduling(const std::vector<std::shared_ptr<OptimizerSchemaTrace>> &traces);
+    void RunTracesWithLoadBalanceScheduling(const std::vector<std::shared_ptr<OptimizerSchemaTrace>> &traces);
     void HandleRequest(const RequestSchemaTrace &trace);
     void ScheduleRequestWrite(const RequestSchemaTrace &trace);
     void FlushPendingWritesThrough(int64_t timestamp_ns);

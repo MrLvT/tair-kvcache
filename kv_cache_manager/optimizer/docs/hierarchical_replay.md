@@ -40,6 +40,7 @@ bazel run //kv_cache_manager/optimizer:hierarchical_replay_main -- /path/to/hier
 - write-through/cascading/selective 写入 storage pool 时只写真实进入 pool 的 block key。
 - combined 统计中 `LocalHit*` 表示 engine 本地命中，`PeerHit*` 表示同集群 peer 命中，`RemoteHit*` 表示 storage pool 命中，`Hit* = LocalHit* + PeerHit* + RemoteHit*`。未开启 P2P 时 `PeerHit*` 为 0。
 - `enable_lifecycle_tracking=true` 时，engine manager 和 storage pool manager 都会导出各自 instance 的 `*_lifecycle.csv`；默认关闭，避免大 trace 下额外内存开销。
+- `enable_cache_retention_tracking=true` 时按物理淘汰发生分钟输出 cache retention。每个 `infer_clusters[]` 必须配置非空 `service_name`；同一个 storage pool 不能映射到多个 service。
 
 输出：
 
@@ -48,6 +49,8 @@ bazel run //kv_cache_manager/optimizer:hierarchical_replay_main -- /path/to/hier
 - `output_result_path/hierarchical_pool_write_io.csv`：写入 storage pool 的 IO 结果。`PoolWriteTokens` 只统计真实新增写入 pool 的 token；`PoolExistingTokens` 表示写入时 pool 已有副本的 token，不计入新增写入带宽。
 - `output_result_path/infer/`：推理侧独立统计，用于分析每个推理实例本地缓存；开启 `enable_lifecycle_tracking` 后也会输出 `*_lifecycle.csv`。
 - `storage_pool.output_result_path`：storage pool 侧独立统计，用于分析 KVCM/storage pool 池化层；开启 `enable_lifecycle_tracking` 后也会输出 `*_lifecycle.csv`。
+- 开启 retention 后，engine 和 pool 目录分别输出 `<instance>_cache_retention_by_minute.csv` 与 `service_<service>_cache_retention_by_minute.csv`。service 分位数直接由所有 instance 的原始淘汰样本合并计算，不是 instance 分位数的平均。
+- retention CSV 包含创建到淘汰、最近有效 read hit 到淘汰的 average/p50/p75/p99。write touch 保持现有仿真行为但不更新“最近有效 read hit”；从未 read-hit 的淘汰 block 只进入 lifetime，并计入 `NeverReusedEvictedBlocks`；trace 结束仍存活的 block 不进入时长分布。
 
 配置骨架：
 
@@ -58,12 +61,14 @@ bazel run //kv_cache_manager/optimizer:hierarchical_replay_main -- /path/to/hier
   "infer_scheduling_strategy": "preserve_trace",
   "infer_active_windows_from_trace": false,
   "enable_lifecycle_tracking": false,
+  "enable_cache_retention_tracking": false,
   "infer_eviction_params": {
     "eviction_mode": 3,
     "eviction_batch_size_per_instance": 100
   },
   "infer_clusters": [
     {
+      "service_name": "service_a",
       "storage_pool_id": "model_l3",
       "engine_read_query_type": "batch_get",
       "model": {

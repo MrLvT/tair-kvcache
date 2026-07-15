@@ -413,7 +413,10 @@ void RadixTreeIndex::TouchKeysAtTier(const std::vector<int64_t> &block_keys,
         }
         block->access_count += 1;
         block->last_access_time = timestamp;
-        TouchTierLocation(block, tier_idx, timestamp, refresh_ttl_on_read, false, true);
+        if (stats_collector_) {
+            stats_collector_->OnBlockReadHit(instance_id_, block, timestamp);
+        }
+        TouchTierLocation(block, tier_idx, timestamp, refresh_ttl_on_read, false, true, true);
         current_tier_flow_.RecordReadTouch(instance_id_, block, tier_name, TierFlowEventReason::READ, timestamp);
     }
 }
@@ -532,6 +535,7 @@ void RadixTreeIndex::CleanEmptyBlocks(const std::vector<BlockEntry *> &blocks,
             // 使用真实/逻辑驱逐时间戳记录事件
             if (stats_collector_) {
                 stats_collector_->OnBlockEviction(instance_id_, block, effective_eviction_timestamp);
+                stats_collector_->OnBlockRetentionEviction(instance_id_, block, eviction_timestamp);
             }
 
             auto indexed = block_index_.find(block->key);
@@ -748,7 +752,7 @@ void RadixTreeIndex::TouchExistingTierOnWrite(BlockEntry *block,
         return;
     }
 
-    TouchTierLocation(block, tier_idx, timestamp, false, false, false);
+    TouchTierLocation(block, tier_idx, timestamp, false, false, false, false);
     const auto reason = count_write_touch ? TierFlowEventReason::WRITE : TierFlowEventReason::WRITE_PROPAGATION;
     current_tier_flow_.RecordWriteTouch(instance_id_, block, tier_names_[tier_idx], reason, timestamp);
     if (count_write_touch) {
@@ -762,7 +766,8 @@ void RadixTreeIndex::TouchTierLocation(BlockEntry *block,
                                        int64_t timestamp,
                                        bool refresh_ttl_on_read,
                                        bool update_writing_time,
-                                       bool increase_access_count) {
+                                       bool increase_access_count,
+                                       bool is_read_access) {
     if (block == nullptr || tier_idx >= tier_policies_.size() || tier_idx >= tier_names_.size()) {
         return;
     }
@@ -777,7 +782,11 @@ void RadixTreeIndex::TouchTierLocation(BlockEntry *block,
     if (increase_access_count) {
         loc_it->second.access_count += 1;
     }
-    tier_policies_[tier_idx]->OnBlockAccessedWithOptions(block, timestamp, refresh_ttl_on_read);
+    if (is_read_access) {
+        tier_policies_[tier_idx]->OnBlockAccessedWithOptions(block, timestamp, refresh_ttl_on_read);
+    } else {
+        tier_policies_[tier_idx]->OnBlockTouched(block, timestamp);
+    }
 }
 
 bool RadixTreeIndex::ShouldPropagateReadAcrossEdge(size_t edge_idx) const {
@@ -794,6 +803,9 @@ bool RadixTreeIndex::IsWriteThroughEdge(size_t edge_idx) const {
 }
 
 void RadixTreeIndex::OnBlockAccessed(BlockEntry *block, int64_t timestamp, bool refresh_ttl_on_read) {
+    if (stats_collector_ && block != nullptr) {
+        stats_collector_->OnBlockReadHit(instance_id_, block, timestamp);
+    }
     TouchBlockLocations(block, timestamp, refresh_ttl_on_read, true);
 }
 
@@ -825,12 +837,12 @@ void RadixTreeIndex::TouchBlockLocations(BlockEntry *block,
         auto loc_it = block->location_map.find(tier_name);
         if (loc_it != block->location_map.end()) {
             if (first_hit) {
-                TouchTierLocation(block, i, timestamp, refresh_ttl_on_read, false, count_read);
+                TouchTierLocation(block, i, timestamp, refresh_ttl_on_read, false, count_read, count_read);
                 current_tier_flow_.RecordReadTouch(
                     instance_id_, block, tier_name, TierFlowEventReason::READ, timestamp);
                 first_hit = false;
             } else if (propagate_access) {
-                TouchTierLocation(block, i, timestamp, refresh_ttl_on_read, false, false);
+                TouchTierLocation(block, i, timestamp, refresh_ttl_on_read, false, false, count_read);
                 current_tier_flow_.RecordReadTouch(
                     instance_id_, block, tier_name, TierFlowEventReason::READ, timestamp);
             }
@@ -1088,6 +1100,19 @@ void RadixTreeIndex::Clear() {
     // 重新创建根节点，清空整个树
     block_index_.clear();
     root_ = std::make_unique<RadixTreeNode>();
+}
+
+void RadixTreeIndex::ClearAt(int64_t timestamp) {
+    if (stats_collector_) {
+        for (const auto &[_, block] : block_index_) {
+            if (block == nullptr || block->location_map.empty()) {
+                continue;
+            }
+            stats_collector_->OnBlockEviction(instance_id_, block, timestamp);
+            stats_collector_->OnBlockRetentionEviction(instance_id_, block, timestamp);
+        }
+    }
+    Clear();
 }
 
 } // namespace kv_cache_manager

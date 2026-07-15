@@ -53,6 +53,7 @@ public:
 
     // 清空指定实例的缓存
     bool ClearCache(const std::string &instance_id);
+    bool ClearCacheAt(const std::string &instance_id, int64_t timestamp);
 
     // 清空所有实例的缓存
     void ClearAllCaches();

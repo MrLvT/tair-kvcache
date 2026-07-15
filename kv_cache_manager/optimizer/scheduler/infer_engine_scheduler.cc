@@ -1,6 +1,7 @@
 #include "kv_cache_manager/optimizer/scheduler/infer_engine_scheduler.h"
 
 #include <algorithm>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 
@@ -124,6 +125,79 @@ std::string InferEngineScheduler::ChoosePrefixHitEngineInstance(
         return candidates.front();
     }
     return candidates[request_idx % candidates.size()];
+}
+
+void InferEngineScheduler::SetPrefillDurationPredictor(PrefillDurationPredictor predictor) {
+    prefill_duration_predictor_ = std::move(predictor);
+}
+
+void InferEngineScheduler::SetConcurrencyPerEngine(int32_t concurrency) {
+    if (concurrency <= 0) {
+        concurrency = 1;
+    }
+    concurrency_per_engine_ = concurrency;
+}
+
+std::string InferEngineScheduler::ChooseLoadBalanceEngineInstance(int64_t timestamp_ns, size_t request_idx) {
+    const auto active_ids = ActiveEngineInstanceIds(timestamp_ns);
+    if (active_ids.empty()) {
+        throw std::runtime_error("load_balance scheduling has no active engine instance at timestamp " +
+                                 std::to_string(timestamp_ns));
+    }
+
+    // For each active engine, find the earliest-free lane time.
+    // Pick the engine whose earliest-free lane is the smallest (i.e. soonest available).
+    int64_t best_earliest_free = std::numeric_limits<int64_t>::max();
+    std::vector<std::string> candidates;
+
+    for (const auto &engine_id : active_ids) {
+        auto it = engine_lanes_.find(engine_id);
+        int64_t earliest_free = 0; // no lanes occupied yet
+        if (it != engine_lanes_.end() && !it->second.empty()) {
+            earliest_free = it->second.top(); // min-heap top = earliest free lane
+        }
+        if (earliest_free < best_earliest_free) {
+            best_earliest_free = earliest_free;
+            candidates.clear();
+            candidates.push_back(engine_id);
+        } else if (earliest_free == best_earliest_free) {
+            candidates.push_back(engine_id);
+        }
+    }
+    return candidates[request_idx % candidates.size()];
+}
+
+void InferEngineScheduler::RecordPrefillStart(const std::string &engine_instance_id,
+                                              int64_t start_timestamp_ns,
+                                              int64_t prefill_duration_ns) {
+    if (prefill_duration_ns <= 0) {
+        prefill_duration_ns = 1;
+    }
+
+    auto &lanes = engine_lanes_[engine_instance_id];
+
+    // Initialize lanes for this engine if not yet done.
+    if (static_cast<int32_t>(lanes.size()) < concurrency_per_engine_) {
+        while (static_cast<int32_t>(lanes.size()) < concurrency_per_engine_) {
+            lanes.push(0); // all lanes start free at time 0
+        }
+    }
+
+    // Pop the earliest-free lane, compute its new completion time, push it back.
+    int64_t lane_free_at = lanes.top();
+    lanes.pop();
+    // The request can only start when both the lane is free and the request arrives.
+    int64_t actual_start = std::max(lane_free_at, start_timestamp_ns);
+    int64_t completion = actual_start + prefill_duration_ns;
+    lanes.push(completion);
+}
+
+void InferEngineScheduler::DrainCompletedPrefills(int64_t /* current_timestamp_ns */) {
+    // No-op in the lane model: lane availability is implicit in the completion timestamps.
+}
+
+void InferEngineScheduler::ResetLoadState() {
+    engine_lanes_.clear();
 }
 
 } // namespace kv_cache_manager

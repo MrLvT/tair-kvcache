@@ -116,6 +116,10 @@ bool HierarchicalModelConfig::FromRapidValue(const rapidjson::Value &rapid_value
         TtlParams ttl_params;
         KVCM_JSON_GET_MACRO(rapid_value, "eviction_policy_params", ttl_params);
         eviction_policy_param_ = ttl_params;
+    } else if (eviction_policy_type_ == EvictionPolicyType::POLICY_PROMOTE_LRU) {
+        PromoteLruParams promote_lru_params;
+        KVCM_JSON_GET_MACRO(rapid_value, "eviction_policy_params", promote_lru_params);
+        eviction_policy_param_ = promote_lru_params;
     } else {
         return false;
     }
@@ -133,6 +137,8 @@ void HierarchicalModelConfig::ToRapidWriter(rapidjson::Writer<rapidjson::StringB
         Put(writer, "eviction_policy_params", std::get<RandomLruParams>(eviction_policy_param_));
     } else if (eviction_policy_type_ == EvictionPolicyType::POLICY_TTL) {
         Put(writer, "eviction_policy_params", std::get<TtlParams>(eviction_policy_param_));
+    } else if (eviction_policy_type_ == EvictionPolicyType::POLICY_PROMOTE_LRU) {
+        Put(writer, "eviction_policy_params", std::get<PromoteLruParams>(eviction_policy_param_));
     }
 }
 
@@ -205,6 +211,7 @@ void InferActiveWindowConfig::ToRapidWriter(rapidjson::Writer<rapidjson::StringB
 
 bool InferClusterConfig::FromRapidValue(const rapidjson::Value &rapid_value) {
     KVCM_JSON_GET_MACRO(rapid_value, "storage_pool_id", storage_pool_id_);
+    KVCM_JSON_GET_DEFAULT_MACRO(rapid_value, "service_name", service_name_, std::string(""));
     KVCM_JSON_GET_MACRO(rapid_value, "engine_read_query_type", engine_read_query_type_);
     KVCM_JSON_GET_MACRO(rapid_value, "model", model_);
     KVCM_JSON_GET_MACRO(rapid_value, "infer_ids", infer_ids_);
@@ -220,6 +227,9 @@ bool InferClusterConfig::FromRapidValue(const rapidjson::Value &rapid_value) {
 
 void InferClusterConfig::ToRapidWriter(rapidjson::Writer<rapidjson::StringBuffer> &writer) const noexcept {
     Put(writer, "storage_pool_id", storage_pool_id_);
+    if (!service_name_.empty()) {
+        Put(writer, "service_name", service_name_);
+    }
     Put(writer, "engine_read_query_type", engine_read_query_type_);
     Put(writer, "model", model_);
     Put(writer, "infer_ids", infer_ids_);
@@ -255,6 +265,10 @@ bool HierarchicalReplayConfig::FromRapidValue(const rapidjson::Value &rapid_valu
     if (!IsSupportedInferSchedulingStrategy(infer_scheduling_strategy_)) {
         return false;
     }
+    KVCM_JSON_GET_DEFAULT_MACRO(rapid_value, "infer_concurrency", infer_concurrency_, 1);
+    if (infer_concurrency_ <= 0) {
+        infer_concurrency_ = 1;
+    }
     KVCM_JSON_GET_DEFAULT_MACRO(
         rapid_value, "infer_active_windows_from_trace", infer_active_windows_from_trace_, false);
     KVCM_JSON_GET_DEFAULT_MACRO(rapid_value, "cache_drop_event_file", cache_drop_event_file_, std::string(""));
@@ -267,6 +281,17 @@ bool HierarchicalReplayConfig::FromRapidValue(const rapidjson::Value &rapid_valu
     }
     KVCM_JSON_GET_DEFAULT_MACRO(
         rapid_value, "enable_lifecycle_tracking", enable_lifecycle_tracking_, enable_lifecycle_tracking_);
+    KVCM_JSON_GET_DEFAULT_MACRO(rapid_value,
+                                "enable_cache_retention_tracking",
+                                enable_cache_retention_tracking_,
+                                enable_cache_retention_tracking_);
+    if (enable_cache_retention_tracking_) {
+        for (const auto &cluster : infer_clusters_) {
+            if (cluster.service_name().empty()) {
+                return false;
+            }
+        }
+    }
     return !trace_file_path_.empty() && !output_result_path_.empty() && BuildOptimizerConfigs();
 }
 
@@ -276,8 +301,10 @@ void HierarchicalReplayConfig::ToRapidWriter(rapidjson::Writer<rapidjson::String
     Put(writer, "infer_eviction_params", infer_eviction_config_);
     Put(writer, "trace_replay", trace_replay_config_);
     Put(writer, "infer_scheduling_strategy", infer_scheduling_strategy_);
+    Put(writer, "infer_concurrency", infer_concurrency_);
     Put(writer, "infer_active_windows_from_trace", infer_active_windows_from_trace_);
     Put(writer, "enable_lifecycle_tracking", enable_lifecycle_tracking_);
+    Put(writer, "enable_cache_retention_tracking", enable_cache_retention_tracking_);
     if (!cache_drop_event_file_.empty()) {
         Put(writer, "cache_drop_event_file", cache_drop_event_file_);
     }

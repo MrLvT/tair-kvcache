@@ -82,6 +82,7 @@ public:
 
     // 清空整个RadixTree的缓存
     void Clear();
+    void ClearAt(int64_t timestamp);
 
     void SetStatsCollector(std::shared_ptr<StatsCollector> collector) { stats_collector_ = collector; }
 
@@ -187,7 +188,8 @@ private:
                            int64_t timestamp,
                            bool refresh_ttl_on_read,
                            bool update_writing_time,
-                           bool increase_access_count);
+                           bool increase_access_count,
+                           bool is_read_access);
     bool ShouldPropagateReadAcrossEdge(size_t edge_idx) const;
     bool ShouldPropagateWriteAcrossEdge(size_t edge_idx) const;
     bool IsWriteThroughEdge(size_t edge_idx) const;
