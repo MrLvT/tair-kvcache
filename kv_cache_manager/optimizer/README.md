@@ -187,11 +187,16 @@ bazel build //kv_cache_manager/optimizer:optimizer_main
 
 ```bash
 bazel run //kv_cache_manager/optimizer:optimizer_main -- /path/to/config.json
+
+# 可选：在 global pooled 单次回放中导出 cache retention timeline CSV
+bazel run //kv_cache_manager/optimizer:optimizer_main -- \
+  /path/to/config.json --export-cache-retention
 ```
 
 运行完成后，会在 `output_result_path` 指定的目录下生成：
 
 - `{instance_id}_hit_rates.csv` - 每个 instance 的命中率数据
+- `{instance_id}_cache_retention_by_minute.csv` - 物理淘汰的 retention 分钟统计（需 `--export-cache-retention`）
 
 ### 可视化分析
 

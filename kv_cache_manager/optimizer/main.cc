@@ -10,8 +10,10 @@ int main(int argc, char *argv[]) {
     kv_cache_manager::LoggerBroker::InitLogger("", false);
     kv_cache_manager::LoggerBroker::SetLogLevel(kv_cache_manager::Logger::LEVEL_INFO);
 
-    if (argc != 2) {
-        std::cerr << "Usage: " << argv[0] << " <optimizer_config.json>" << std::endl;
+    if (argc < 2 || argc > 3 ||
+        (argc == 3 && std::string(argv[2]) != "--export-cache-retention")) {
+        std::cerr << "Usage: " << argv[0]
+                  << " <optimizer_config.json> [--export-cache-retention]" << std::endl;
         std::cerr << std::endl;
         std::cerr << "Optimizer only accepts standard format trace files." << std::endl;
         std::cerr << std::endl;
@@ -27,6 +29,7 @@ int main(int argc, char *argv[]) {
     }
 
     std::string config_file_path = argv[1];
+    const bool enable_cache_retention_tracking = argc == 3;
 
     KVCM_LOG_INFO("Loading optimizer configuration from file: %s", config_file_path.c_str());
 
@@ -43,7 +46,12 @@ int main(int argc, char *argv[]) {
     std::string output_result_path = config.output_result_path();
 
     // 创建优化器管理器
-    auto optimizer = std::make_unique<kv_cache_manager::OptimizerManager>(config);
+    auto optimizer = std::make_unique<kv_cache_manager::OptimizerManager>(
+        config,
+        false,
+        false,
+        kv_cache_manager::HitRatePerspective::KVCM_L3,
+        enable_cache_retention_tracking);
     // 初始化优化器管理器
     if (!optimizer->Init()) {
         KVCM_LOG_ERROR("Failed to initialize optimizer manager.");

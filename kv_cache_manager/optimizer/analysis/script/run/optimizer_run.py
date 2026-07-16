@@ -6,6 +6,7 @@
   python run/optimizer_run.py -c config.json
   python run/optimizer_run.py -c config.json --draw-chart
   python run/optimizer_run.py -c config.json --export-lifecycle
+  python run/optimizer_run.py -c config.json --export-cache-retention
 """
 
 import argparse
@@ -30,6 +31,8 @@ def parse_args():
                         help="是否生成时序命中率图表 (默认: 不生成)")
     parser.add_argument("--export-lifecycle", action="store_true", default=False,
                         help="导出 lifecycle CSV（警告：可能生成超大文件）")
+    parser.add_argument("--export-cache-retention", action="store_true", default=False,
+                        help="导出按物理淘汰分钟聚合的 cache retention CSV")
     parser.add_argument("--enable-template-analysis", action="store_true", default=False,
                         help="启用模板前缀分析（会拖慢回放速度）")
     return parser.parse_args()
@@ -62,7 +65,8 @@ def main():
     manager = kvcm_py_optimizer.OptimizerManager(
         config,
         enable_lifecycle_tracking=args.export_lifecycle,
-        enable_template_analysis=args.enable_template_analysis)
+        enable_template_analysis=args.enable_template_analysis,
+        enable_cache_retention_tracking=args.export_cache_retention)
     if manager is None:
         print("Failed to create OptimizerManager")
         sys.exit(1)
@@ -74,6 +78,8 @@ def main():
         print("      ⚠️  Lifecycle tracking enabled (will use ~10GB extra memory)")
     if args.enable_template_analysis:
         print("      ⚠️  Template prefix analysis enabled (slower replay)")
+    if args.export_cache_retention:
+        print("      Cache retention tracking enabled")
 
     t3 = time.time()
     print("\n[3/4] Running simulation...")

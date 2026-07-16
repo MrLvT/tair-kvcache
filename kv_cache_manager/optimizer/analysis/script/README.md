@@ -25,6 +25,7 @@ Bazel target 前缀：
 | 非分层容量 Pareto | `tradeoff` | `--num-points`、`--min-capacity-ratio`、`--max-workers` | `pareto/pareto_curve_<type>.png` |
 | 多驱逐策略 Pareto | `tradeoff` | `--eviction-policies lru random_lru leaf_aware_lru ttl` | `pareto/multi_policy_<type>.png` |
 | 导出 lifecycle | `optimizer_run` | `--export-lifecycle` | `<instance_id>_lifecycle.csv` |
+| 导出 cache retention | `optimizer_run` | `--export-cache-retention` | `*_cache_retention_by_minute.csv` |
 | 分析 lifecycle | `analyze_lifecycle` | `-i <csv_or_dir>` | `lifecycle/*_cdf.png`、`*_access_count.png` |
 | RadixTree 热点路径 | `export_tree` | `--show-hot-paths --hot-nodes N --show-blocks` | `radix_tree/*_hot_paths.png` |
 
@@ -50,6 +51,9 @@ bazel run //kv_cache_manager/optimizer/analysis/script:optimizer_run -- -c confi
 
 # 运行 + 导出 lifecycle CSV（用于后续 lifecycle 分析）
 bazel run //kv_cache_manager/optimizer/analysis/script:optimizer_run -- -c config.json --export-lifecycle
+
+# 运行 + 导出 cache retention 分钟统计
+bazel run //kv_cache_manager/optimizer/analysis/script:optimizer_run -- -c config.json --export-cache-retention
 ```
 
 ### 参数
@@ -59,6 +63,7 @@ bazel run //kv_cache_manager/optimizer/analysis/script:optimizer_run -- -c confi
 | `-c, --config` | ✅ | — | optimizer 配置文件路径（JSON） |
 | `--draw-chart` | — | false | 生成命中率时序图 |
 | `--export-lifecycle` | — | false | 导出 lifecycle CSV（内存消耗大） |
+| `--export-cache-retention` | — | false | 导出以物理淘汰分钟为时间桶的 cache retention CSV |
 | `--enable-template-analysis` | — | false | 启用模板前缀分析；会拖慢回放速度，开启后才会生成模板前缀相关 CSV |
 
 ### 输出
@@ -69,11 +74,17 @@ bazel run //kv_cache_manager/optimizer/analysis/script:optimizer_run -- -c confi
 ├── *_template_prefix_traces.csv          # per-trace 模板归属明细（需 --enable-template-analysis）
 ├── *_template_prefix_summary.csv         # 模板级汇总（需 --enable-template-analysis）
 ├── *_lifecycle.csv                       # block 生命周期数据（需 --export-lifecycle）
+├── *_cache_retention_by_minute.csv      # cache retention 分钟统计（需 --export-cache-retention）
 └── timeseries/
     └── multi_instance_cache_analysis.png # 命中率时序图（需 --draw-chart）
 ```
 
 `optimizer_run --draw-chart` 在分层配置下还会生成 `timeseries/per_tier_timeseries.png`；非分层配置会跳过该图。
+
+Cache retention 与 hierarchical replay 使用同一口径：`lifetime = physical eviction - birth`，
+`idle after reuse = physical eviction - last valid read hit`。write touch 不更新 last valid read hit；
+从未 read-hit 的淘汰 block 只进 lifetime；trace 结束时仍存活的 block 不进 duration 分布。
+无限容量 theoretical warmup 不发生 capacity eviction，因此 retention 应在指定的有限总容量回放上采集。
 
 ---
 

@@ -1,3 +1,4 @@
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <stdexcept>
@@ -300,4 +301,53 @@ TEST_F(OptimizerManagerTest, RequestTraceSchedulesDelayedWrite) {
     EXPECT_EQ(data_it->second.write_records[0].timestamp_ns, 2000);
     EXPECT_EQ(data_it->second.write_records[1].timestamp_ns, 2500);
     EXPECT_EQ(data_it->second.write_records[2].timestamp_ns, 3000);
+}
+
+TEST_F(OptimizerManagerTest, GlobalPooledReplayExportsCacheRetention) {
+    auto config = CreateTestOptimizerConfig();
+    const std::string output = GetTestTempRootPath() + "/global_pooled_cache_retention";
+    std::filesystem::remove_all(output);
+    config.set_output_result_path(output);
+
+    auto eviction = config.eviction_config();
+    eviction.set_eviction_batch_size_per_instance(1);
+    config.set_eviction_params(eviction);
+
+    auto groups = config.instance_groups();
+    ASSERT_EQ(groups.size(), 1);
+    auto group = groups[0];
+    group.set_quota_capacity(16);
+    group.set_used_percentage(1.0);
+    auto instances = group.instances();
+    ASSERT_EQ(instances.size(), 1);
+    instances[0].set_block_size(16);
+    instances[0].set_bytes_per_token(1);
+    group.set_instances(instances);
+    config.set_instance_groups({group});
+
+    OptimizerManager manager(config,
+                             false,
+                             false,
+                             HitRatePerspective::KVCM_L3,
+                             true);
+    ASSERT_TRUE(manager.Init());
+
+    manager.WriteCache("instance1", "write_1", 1'000'000'000, {1});
+    BlockMask remote_read_mask = std::vector<bool>{false};
+    auto hit = manager.GetCacheLocation(
+        "instance1", "read_1", 2'000'000'000, {1}, remote_read_mask, 16);
+    ASSERT_EQ(hit.kvcm_hit_length, 1);
+    manager.WriteCache("instance1", "write_2", 3'000'000'000, {2});
+    manager.AnalyzeResults();
+
+    const std::string csv = output + "/instance1_cache_retention_by_minute.csv";
+    ASSERT_TRUE(std::filesystem::exists(csv));
+    std::ifstream input(csv);
+    std::string header;
+    std::string row;
+    ASSERT_TRUE(std::getline(input, header));
+    ASSERT_TRUE(std::getline(input, row));
+    EXPECT_NE(header.find("IdleAfterReuseAverageSeconds"), std::string::npos);
+    EXPECT_NE(row.find(",1,1,0,"), std::string::npos);
+    std::filesystem::remove_all(output);
 }

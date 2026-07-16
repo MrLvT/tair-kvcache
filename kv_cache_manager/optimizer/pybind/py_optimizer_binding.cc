@@ -129,7 +129,8 @@ PYBIND11_MODULE(kvcm_py_optimizer, module) {
              py::arg("hit_rate_perspective") = kvcm::HitRatePerspective::KVCM_L3,
              py::arg("enable_cache_retention_tracking") = false,
              "Initialize OptimizerManager. Set enable_lifecycle_tracking=True to track block lifecycle (uses ~10GB "
-             "more memory). Set enable_template_analysis=True to enable template prefix analysis (slower replay)")
+             "more memory). Set enable_template_analysis=True to enable template prefix analysis (slower replay). "
+             "Set enable_cache_retention_tracking=True to export physical-eviction retention summaries")
         .def("Init", &kvcm::OptimizerManager::Init, py::call_guard<py::gil_scoped_release>())
         .def("DirectRun", &kvcm::OptimizerManager::DirectRun, py::call_guard<py::gil_scoped_release>())
         .def("AnalyzeResults",
