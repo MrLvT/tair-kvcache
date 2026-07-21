@@ -89,6 +89,22 @@ TEST_F(LruEvictionPolicyTest, OnBlockAccessed) {
     EXPECT_EQ(evicted[0]->key, 2);
 }
 
+TEST_F(LruEvictionPolicyTest, ReportsOldestAndNewestAccessTimeAcrossShards) {
+    LruParams params;
+    params.sample_rate = 1.0;
+    params.shard_count = 2;
+    auto policy = std::make_shared<LruEvictionPolicy>("shared", params);
+    auto oldest = CreateSharedBlock(1, 1000);
+    auto newest = CreateSharedBlock(2, 5000);
+    policy->OnBlockWritten(&oldest);
+    policy->OnBlockWritten(&newest);
+
+    const auto range = policy->AccessTimeRange();
+    ASSERT_TRUE(range.has_value());
+    EXPECT_EQ(range->first, 1000);
+    EXPECT_EQ(range->second, 5000);
+}
+
 TEST_F(LruEvictionPolicyTest, EvictBlocks) {
     auto block1 = CreateBlock(1, 1000);
     auto block2 = CreateBlock(2, 2000);

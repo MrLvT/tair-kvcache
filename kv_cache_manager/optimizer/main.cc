@@ -1,5 +1,6 @@
 #include <iostream>
 #include <string>
+#include <unordered_map>
 
 #include "kv_cache_manager/common/logger.h"
 #include "kv_cache_manager/optimizer/config/optimizer_config_loader.h"
@@ -10,10 +11,11 @@ int main(int argc, char *argv[]) {
     kv_cache_manager::LoggerBroker::InitLogger("", false);
     kv_cache_manager::LoggerBroker::SetLogLevel(kv_cache_manager::Logger::LEVEL_INFO);
 
-    if (argc < 2 || argc > 3 ||
-        (argc == 3 && std::string(argv[2]) != "--export-cache-retention")) {
+    if (argc < 2) {
         std::cerr << "Usage: " << argv[0]
-                  << " <optimizer_config.json> [--export-cache-retention]" << std::endl;
+                  << " <optimizer_config.json> [--export-cache-retention]"
+                     " [--export-cache-read-interval]"
+                  << std::endl;
         std::cerr << std::endl;
         std::cerr << "Optimizer only accepts standard format trace files." << std::endl;
         std::cerr << std::endl;
@@ -29,7 +31,20 @@ int main(int argc, char *argv[]) {
     }
 
     std::string config_file_path = argv[1];
-    const bool enable_cache_retention_tracking = argc == 3;
+    bool enable_cache_retention_tracking = false;
+    bool enable_cache_read_interval_tracking = false;
+    for (int index = 2; index < argc; ++index) {
+        const std::string flag = argv[index];
+        if (flag == "--export-cache-retention") {
+            enable_cache_retention_tracking = true;
+        } else if (flag == "--export-cache-read-interval") {
+            enable_cache_read_interval_tracking = true;
+        } else {
+            std::cerr << "Unknown option: " << flag << std::endl;
+            kv_cache_manager::LoggerBroker::DestroyLogger();
+            return 1;
+        }
+    }
 
     KVCM_LOG_INFO("Loading optimizer configuration from file: %s", config_file_path.c_str());
 
@@ -51,7 +66,9 @@ int main(int argc, char *argv[]) {
         false,
         false,
         kv_cache_manager::HitRatePerspective::KVCM_L3,
-        enable_cache_retention_tracking);
+        enable_cache_retention_tracking,
+        std::unordered_map<std::string, std::string>{},
+        enable_cache_read_interval_tracking);
     // 初始化优化器管理器
     if (!optimizer->Init()) {
         KVCM_LOG_ERROR("Failed to initialize optimizer manager.");

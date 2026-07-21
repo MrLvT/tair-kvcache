@@ -48,5 +48,6 @@ public:
     std::vector<BlockEntry *> EvictBlocks(size_t count) override;
     void Clear() override;
     size_t size() const override { return node_map_.size(); }
+    std::optional<std::pair<int64_t, int64_t>> AccessTimeRange() const override;
 };
 } // namespace kv_cache_manager

@@ -16,6 +16,7 @@
 
 ### 模块文档
 - [优化器文档](optimizer.md) - 缓存优化策略和算法说明
+- [Cache retention 仿真功能交接](../kv_cache_manager/optimizer/docs/cache_retention_handoff.md) - 生命周期、birth/last read 口径、实验结论与复现方法
 - [Optimizer 工作手册](../kv_cache_manager/optimizer/.agent/handbook/README.md) - Optimizer 渐进式工作入口、任务路由、skills 和开发约束
 - Prometheus Metrics
   - [English](prometheus-en_US.md) - Prometheus metrics endpoint documentation

@@ -28,7 +28,7 @@ def _load(path):
     return rows
 
 
-def plot_csv(csv_path, output_path=None):
+def plot_csv(csv_path, output_path=None, minute_interval=None):
     rows = _load(csv_path)
     if not rows:
         raise ValueError("empty cache retention CSV: %s" % csv_path)
@@ -39,18 +39,18 @@ def plot_csv(csv_path, output_path=None):
             "Lifetime",
             [
                 ("average", "LifetimeAverageSeconds"),
+                ("p10", "LifetimeP10Seconds"),
                 ("p50", "LifetimeP50Seconds"),
-                ("p75", "LifetimeP75Seconds"),
-                ("p99", "LifetimeP99Seconds"),
+                ("p95", "LifetimeP95Seconds"),
             ],
         ),
         (
             "Idle after last valid read hit",
             [
                 ("average", "IdleAfterReuseAverageSeconds"),
+                ("p10", "IdleAfterReuseP10Seconds"),
                 ("p50", "IdleAfterReuseP50Seconds"),
-                ("p75", "IdleAfterReuseP75Seconds"),
-                ("p99", "IdleAfterReuseP99Seconds"),
+                ("p95", "IdleAfterReuseP95Seconds"),
             ],
         ),
     ]
@@ -65,13 +65,38 @@ def plot_csv(csv_path, output_path=None):
                 linewidth=1.4,
                 marker=".",
             )
+        if title == "Idle after last valid read hit" and "LruTimeSpanSeconds" in rows[0]:
+            axis.plot(
+                times,
+                [_optional_float(row["LruTimeSpanSeconds"]) for row in rows],
+                label="LRU time span (minute-end snapshot)",
+                linewidth=1.8,
+                linestyle="--",
+                color="black",
+            )
         axis.set_title(title)
         axis.set_ylabel("seconds")
         axis.grid(alpha=0.25)
         axis.legend(ncol=4)
     axes[-1].set_xlabel("Time (Asia/Shanghai)")
-    minute_interval = 1 if len(rows) <= 15 else 10 if len(rows) <= 120 else 15
-    axes[-1].xaxis.set_major_locator(mdates.MinuteLocator(interval=minute_interval, tz=SHANGHAI))
+    if minute_interval is None:
+        minute_interval = (
+            1
+            if len(rows) <= 15
+            else 10
+            if len(rows) <= 120
+            else 30
+            if len(rows) <= 360
+            else 60
+        )
+    if minute_interval % 60 == 0:
+        axes[-1].xaxis.set_major_locator(
+            mdates.HourLocator(interval=minute_interval // 60, tz=SHANGHAI)
+        )
+    else:
+        axes[-1].xaxis.set_major_locator(
+            mdates.MinuteLocator(interval=minute_interval, tz=SHANGHAI)
+        )
     axes[-1].xaxis.set_major_formatter(mdates.DateFormatter("%H:%M", tz=SHANGHAI))
 
     service = os.path.basename(csv_path)
@@ -91,7 +116,15 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("csv", nargs="+", help="service_*_cache_retention_by_minute.csv")
     parser.add_argument("--output-dir", default=None)
+    parser.add_argument(
+        "--minute-interval",
+        type=int,
+        default=None,
+        help="fixed x-axis major tick interval in minutes (default: automatic)",
+    )
     args = parser.parse_args()
+    if args.minute_interval is not None and args.minute_interval <= 0:
+        parser.error("--minute-interval must be positive")
     for csv_path in args.csv:
         output_path = None
         if args.output_dir:
@@ -100,7 +133,7 @@ def main():
                 args.output_dir,
                 os.path.basename(csv_path).replace("_by_minute.csv", "_timeline.png"),
             )
-        print(plot_csv(csv_path, output_path))
+        print(plot_csv(csv_path, output_path, args.minute_interval))
 
 
 if __name__ == "__main__":

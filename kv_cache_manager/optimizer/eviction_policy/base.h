@@ -1,7 +1,9 @@
 #pragma once
 #include <climits>
 #include <memory>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "kv_cache_manager/optimizer/config/types.h"
@@ -26,9 +28,14 @@ public:
     }
     virtual std::vector<BlockEntry *> EvictBlocks(size_t num_blocks) = 0;
     virtual std::vector<BlockEntry *> EvictExpired() { return {}; }
+    virtual bool RemoveBlock(BlockEntry *block) {
+        (void)block;
+        return false;
+    }
     virtual void Clear() = 0;
     virtual bool NeedCapacityEviction() const { return true; }
     virtual void AdvanceClock(int64_t timestamp) { (void)timestamp; }
+    virtual std::optional<std::pair<int64_t, int64_t>> AccessTimeRange() const { return std::nullopt; }
 
     const std::string &name() const { return name_; }
     void set_name(const std::string &name) { name_ = name; }

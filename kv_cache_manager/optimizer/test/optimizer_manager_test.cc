@@ -351,3 +351,66 @@ TEST_F(OptimizerManagerTest, GlobalPooledReplayExportsCacheRetention) {
     EXPECT_NE(row.find(",1,1,0,"), std::string::npos);
     std::filesystem::remove_all(output);
 }
+
+TEST_F(OptimizerManagerTest, InfiniteGlobalPoolExportsConsecutiveReadIntervals) {
+    auto config = CreateTestOptimizerConfig();
+    const std::string output = GetTestTempRootPath() + "/global_pool_cache_read_interval";
+    std::filesystem::remove_all(output);
+    config.set_output_result_path(output);
+
+    auto groups = config.instance_groups();
+    ASSERT_EQ(groups.size(), 1);
+    auto group = groups[0];
+    group.set_quota_capacity(-1);
+    group.set_used_percentage(1.0);
+    auto instances = group.instances();
+    ASSERT_EQ(instances.size(), 1);
+    instances[0].set_block_size(16);
+    instances[0].set_bytes_per_token(1);
+    group.set_instances(instances);
+    config.set_instance_groups({group});
+
+    OptimizerManager manager(config,
+                             false,
+                             false,
+                             HitRatePerspective::KVCM_L3,
+                             false,
+                             {},
+                             true);
+    ASSERT_TRUE(manager.Init());
+
+    constexpr int64_t second = 1000LL * 1000 * 1000;
+    manager.WriteCache("instance1", "write", second, {1});
+    BlockMask remote_read_mask = std::vector<bool>{false};
+    ASSERT_EQ(manager.GetCacheLocation(
+                          "instance1", "read_1", 10 * second, {1}, remote_read_mask, 16)
+                  .kvcm_hit_length,
+              1);
+    ASSERT_EQ(manager.GetCacheLocation(
+                          "instance1", "read_2", 20 * second, {1}, remote_read_mask, 16)
+                  .kvcm_hit_length,
+              1);
+    manager.AnalyzeResults();
+
+    const std::string csv = output + "/instance1_cache_read_interval_by_minute.csv";
+    ASSERT_TRUE(std::filesystem::exists(csv));
+    std::ifstream input(csv);
+    std::string header;
+    std::string row;
+    ASSERT_TRUE(std::getline(input, header));
+    ASSERT_TRUE(std::getline(input, row));
+    EXPECT_NE(header.find("ReadIntervalP95Seconds"), std::string::npos);
+    EXPECT_NE(header.find("ReadIntervalP99Seconds"), std::string::npos);
+    EXPECT_NE(row.find(",1,10.000000000,10.000000000,10.000000000,10.000000000,10.000000000"),
+              std::string::npos);
+
+    const std::string histogram_csv = output + "/instance1_cache_read_interval_histogram.csv";
+    ASSERT_TRUE(std::filesystem::exists(histogram_csv));
+    std::ifstream histogram_input(histogram_csv);
+    ASSERT_TRUE(std::getline(histogram_input, header));
+    ASSERT_TRUE(std::getline(histogram_input, row));
+    EXPECT_EQ(header,
+              "IntervalUpperSeconds,IntervalSamples,SamplesAtOrAboveBucket,FractionAtOrAboveBucket");
+    EXPECT_EQ(row, "10,1,1,1.000000000000");
+    std::filesystem::remove_all(output);
+}

@@ -26,6 +26,7 @@ Bazel target 前缀：
 | 多驱逐策略 Pareto | `tradeoff` | `--eviction-policies lru random_lru leaf_aware_lru ttl` | `pareto/multi_policy_<type>.png` |
 | 导出 lifecycle | `optimizer_run` | `--export-lifecycle` | `<instance_id>_lifecycle.csv` |
 | 导出 cache retention | `optimizer_run` | `--export-cache-retention` | `*_cache_retention_by_minute.csv` |
+| 导出 cache read interval | `optimizer_run` | `--export-cache-read-interval` | `*_cache_read_interval_by_minute.csv`、`*_histogram.csv` |
 | 分析 lifecycle | `analyze_lifecycle` | `-i <csv_or_dir>` | `lifecycle/*_cdf.png`、`*_access_count.png` |
 | RadixTree 热点路径 | `export_tree` | `--show-hot-paths --hot-nodes N --show-blocks` | `radix_tree/*_hot_paths.png` |
 
@@ -54,6 +55,14 @@ bazel run //kv_cache_manager/optimizer/analysis/script:optimizer_run -- -c confi
 
 # 运行 + 导出 cache retention 分钟统计
 bazel run //kv_cache_manager/optimizer/analysis/script:optimizer_run -- -c config.json --export-cache-retention
+
+# global pooled 回放 + 导出相邻 read-hit interval
+bazel run //kv_cache_manager/optimizer/analysis/script:optimizer_run -- -c config.json --export-cache-read-interval
+
+# 指定容量的单点实验：同时导出 retention 和 read interval，不会自动 sweep
+bazel run //kv_cache_manager/optimizer/analysis/script:optimizer_run -- \
+  -c finite-capacity-config.json \
+  --export-cache-retention --export-cache-read-interval
 ```
 
 ### 参数
@@ -64,6 +73,7 @@ bazel run //kv_cache_manager/optimizer/analysis/script:optimizer_run -- -c confi
 | `--draw-chart` | — | false | 生成命中率时序图 |
 | `--export-lifecycle` | — | false | 导出 lifecycle CSV（内存消耗大） |
 | `--export-cache-retention` | — | false | 导出以物理淘汰分钟为时间桶的 cache retention CSV |
+| `--export-cache-read-interval` | — | false | 导出相邻有效 read hit 的分钟级 summary 和按时长分桶的 histogram CSV |
 | `--enable-template-analysis` | — | false | 启用模板前缀分析；会拖慢回放速度，开启后才会生成模板前缀相关 CSV |
 
 ### 输出
@@ -75,6 +85,8 @@ bazel run //kv_cache_manager/optimizer/analysis/script:optimizer_run -- -c confi
 ├── *_template_prefix_summary.csv         # 模板级汇总（需 --enable-template-analysis）
 ├── *_lifecycle.csv                       # block 生命周期数据（需 --export-lifecycle）
 ├── *_cache_retention_by_minute.csv      # cache retention 分钟统计（需 --export-cache-retention）
+├── *_cache_read_interval_by_minute.csv  # consecutive read-hit interval（需 --export-cache-read-interval）
+├── *_cache_read_interval_histogram.csv  # interval 1 秒桶及 cliff 数据（需 --export-cache-read-interval）
 └── timeseries/
     └── multi_instance_cache_analysis.png # 命中率时序图（需 --draw-chart）
 ```
@@ -85,6 +97,78 @@ Cache retention 与 hierarchical replay 使用同一口径：`lifetime = physica
 `idle after reuse = physical eviction - last valid read hit`。write touch 不更新 last valid read hit；
 从未 read-hit 的淘汰 block 只进 lifetime；trace 结束时仍存活的 block 不进 duration 分布。
 无限容量 theoretical warmup 不发生 capacity eviction，因此 retention 应在指定的有限总容量回放上采集。
+分钟 CSV 保留 average/p10/p50/p75/p95/p99，timeline 默认展示需求口径的 average/p10/p50/p95。
+诊断列还包含 all-block last-touch age、distinct eviction/last-read timestamp、最大 last-read cohort，
+以及按相同 eviction timestamp 分组后的 batch idle p95-p10 spread，用于区分分钟聚合效应与 LRU cohort 效应。
+
+### Cache read interval 分析与绘图
+
+Cache read interval 用于 global pooled theoretical replay，既可采集无限容量基线，也可采集一个
+明确指定的有限容量点。它只认有效 cache read hit：
+首次 read hit 只建立起点，后续每次 read hit 与前一次形成一个 interval，并按后一次 read 的分钟归桶。
+一个 block 有 N 次有效 hit 时产生 N-1 个相邻 interval；miss 和 write touch 不计。
+不足两次 read 的 block 不产生样本；evict 会清除 last-read 状态，rebirth 后不跨 cache lifecycle 计算。
+
+分钟 CSV 列为 `MinuteStartNs`、`MinuteStart`、`IntervalSamples`，以及
+`ReadIntervalAverageSeconds`、`ReadIntervalP50Seconds`、`ReadIntervalP75Seconds`、
+`ReadIntervalP95Seconds`、`ReadIntervalP99Seconds`。当前 timeline 默认只画
+**average、p50、p95**；p75/p99 继续保留在 CSV 中，便于其他分析复用。
+
+同一开关还会生成 `<instance>_cache_read_interval_histogram.csv`。每个 interval 在产生时直接
+进入 1 秒上界桶，不需要保存数亿条原始明细；列含义如下：
+
+| 列 | 说明 |
+|---|---|
+| `IntervalUpperSeconds` | 1 秒桶的闭区间上界；例如 `10` 表示 `(9s, 10s]`，`0` 表示零间隔 |
+| `IntervalSamples` | 当前桶的 interval 样本数 |
+| `SamplesAtOrAboveBucket` | 当前桶及所有更长 interval 的反向累计数，用于 cliff 图 |
+| `FractionAtOrAboveBucket` | 反向累计数占全部 interval 的比例 |
+
+无限容量与有限容量配置的关键区别：
+
+```json
+// 无限容量基线
+{"quota_capacity": -1}
+
+// 指定容量单点；quota_capacity 单位为 GiB
+{"quota_capacity": 27625}
+```
+
+`block_size` 与 `bytes_per_token` 必须按实验口径明确配置。`bytes_per_token` 是整数 bytes；
+例如 `45.714 KiB/token` 在当前配置中取最近整数 `46811 bytes/token`。
+
+生成 timeline（average/p50/p95）：
+
+```bash
+bazel run //kv_cache_manager/optimizer/analysis/script:cache_read_interval_plot -- \
+  /path/to/<instance>_cache_read_interval_by_minute.csv \
+  --output-dir /path/to/plots \
+  --label "Infinite capacity"
+
+# 有限容量图使用同一个入口，仅修改输入和标题标签
+bazel run //kv_cache_manager/optimizer/analysis/script:cache_read_interval_plot -- \
+  /path/to/finite/<instance>_cache_read_interval_by_minute.csv \
+  --output-dir /path/to/plots \
+  --label "Capacity 27625 GiB"
+```
+
+生成 exact 1-second histogram 与反向累计 cliff 的双 panel 图（两轴默认 log）：
+
+```bash
+bazel run //kv_cache_manager/optimizer/analysis/script:cache_read_interval_distribution_plot -- \
+  /path/to/<instance>_cache_read_interval_histogram.csv \
+  --output /path/to/plots/<instance>_cache_read_interval_distribution.png
+```
+
+生成线性横轴 CDF。默认展示 `0–5000s`；上 panel 为完整 0%–100% CDF，下 panel 放大
+90%–100% 尾部并标注每 1000 秒的累计比例。`--max-seconds` 只改变显示窗口，不删除完整 histogram 数据：
+
+```bash
+bazel run //kv_cache_manager/optimizer/analysis/script:cache_read_interval_cdf_plot -- \
+  /path/to/<instance>_cache_read_interval_histogram.csv \
+  --output /path/to/plots/<instance>_cache_read_interval_cdf.png \
+  --max-seconds 5000
+```
 
 ---
 

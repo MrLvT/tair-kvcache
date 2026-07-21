@@ -15,6 +15,12 @@ namespace kv_cache_manager {
 class OptIndexerManager {
 public:
     using EvictedBlocks = std::unordered_map<std::string, std::vector<BlockEntry *>>;
+    struct QuotaAdjustmentResult {
+        bool applied = false;
+        int64_t capacity_before_bytes = 0;
+        int64_t capacity_after_bytes = 0;
+        std::string reason;
+    };
 
     OptIndexerManager(const std::shared_ptr<OptEvictionManager> &eviction_manager);
     ~OptIndexerManager() = default;
@@ -50,6 +56,11 @@ public:
 
     // 获取容量使用情况
     size_t GetCurrentInstanceUsage(const std::string &instance_id) const;
+    std::optional<std::pair<int64_t, int64_t>> GetInstanceAccessTimeRange(const std::string &instance_id) const;
+    QuotaAdjustmentResult AdjustGlobalPooledQuota(const std::string &group_name,
+                                                  int64_t delta_bytes,
+                                                  int64_t effective_time_ns,
+                                                  int64_t minimum_capacity_bytes);
 
     // 清空指定实例的缓存
     bool ClearCache(const std::string &instance_id);

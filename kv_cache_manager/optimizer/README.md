@@ -191,12 +191,31 @@ bazel run //kv_cache_manager/optimizer:optimizer_main -- /path/to/config.json
 # 可选：在 global pooled 单次回放中导出 cache retention timeline CSV
 bazel run //kv_cache_manager/optimizer:optimizer_main -- \
   /path/to/config.json --export-cache-retention
+
+# 可选：在 global pooled 回放中导出相邻 read-hit interval 的分钟统计和时长分布
+bazel run //kv_cache_manager/optimizer:optimizer_main -- \
+  /path/to/config.json --export-cache-read-interval
+
+# 指定容量时可同时导出 retention 和 read interval；只运行这一个容量点，不会自动 sweep
+bazel run //kv_cache_manager/optimizer:optimizer_main -- \
+  /path/to/finite-capacity-config.json \
+  --export-cache-retention --export-cache-read-interval
 ```
 
 运行完成后，会在 `output_result_path` 指定的目录下生成：
 
 - `{instance_id}_hit_rates.csv` - 每个 instance 的命中率数据
 - `{instance_id}_cache_retention_by_minute.csv` - 物理淘汰的 retention 分钟统计（需 `--export-cache-retention`）
+- `{instance_id}_cache_read_interval_by_minute.csv` - 相邻有效 read hit 的分钟级 average/p50/p75/p95/p99（需 `--export-cache-read-interval`）
+- `{instance_id}_cache_read_interval_histogram.csv` - 按 1 秒上界桶统计的 interval 总数和反向累计计数（需 `--export-cache-read-interval`）
+
+Read interval 只统计真实 cache read hit。首次 hit 只建立起点，之后每次 hit 与上次 hit
+形成一个样本；miss 和 write touch 不计。有限容量下 eviction 会结束当前 block 的 read 链，
+rebirth 后重新开始。详细口径和 timeline、histogram/cliff、CDF 调用方法见
+[`analysis/script/README.md`](analysis/script/README.md#cache-read-interval-分析与绘图)。
+
+Cache retention 的实现范围、`birth` / `last valid read hit` 精确定义、现有实验结论与复现方法见
+[`docs/cache_retention_handoff.md`](docs/cache_retention_handoff.md)。
 
 ### 可视化分析
 

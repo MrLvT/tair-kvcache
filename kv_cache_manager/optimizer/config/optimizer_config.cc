@@ -64,6 +64,45 @@ void OptMambaStateConfig::ToRapidWriter(rapidjson::Writer<rapidjson::StringBuffe
     Put(writer, "bytes_per_state", static_cast<uint64_t>(bytes_per_state_));
 }
 
+bool OptCacheAutoscalingConfig::FromRapidValue(const rapidjson::Value &rapid_value) {
+    if (!rapid_value.IsObject()) {
+        KVCM_LOG_ERROR("cache_autoscaling must be an object");
+        return false;
+    }
+    KVCM_JSON_GET_DEFAULT_MACRO(rapid_value, "enabled", enabled_, false);
+    KVCM_JSON_GET_DEFAULT_MACRO(
+        rapid_value, "scale_out_threshold_seconds", scale_out_threshold_seconds_, 300.0);
+    KVCM_JSON_GET_DEFAULT_MACRO(
+        rapid_value, "scale_in_threshold_seconds", scale_in_threshold_seconds_, 360.0);
+    KVCM_JSON_GET_DEFAULT_MACRO(rapid_value, "scale_step_tib", scale_step_tib_, int64_t(27));
+    KVCM_JSON_GET_DEFAULT_MACRO(
+        rapid_value, "scale_out_delay_seconds", scale_out_delay_seconds_, int64_t(300));
+    if (!enabled_) {
+        return true;
+    }
+    if (scale_out_threshold_seconds_ <= 0.0 ||
+        scale_in_threshold_seconds_ <= scale_out_threshold_seconds_) {
+        KVCM_LOG_ERROR("cache_autoscaling requires 0 < scale_out_threshold_seconds < "
+                       "scale_in_threshold_seconds");
+        return false;
+    }
+    if (scale_step_tib_ <= 0 || scale_out_delay_seconds_ < 0) {
+        KVCM_LOG_ERROR("cache_autoscaling requires positive scale_step_tib and non-negative "
+                       "scale_out_delay_seconds");
+        return false;
+    }
+    return true;
+}
+
+void OptCacheAutoscalingConfig::ToRapidWriter(
+    rapidjson::Writer<rapidjson::StringBuffer> &writer) const noexcept {
+    Put(writer, "enabled", enabled_);
+    Put(writer, "scale_out_threshold_seconds", scale_out_threshold_seconds_);
+    Put(writer, "scale_in_threshold_seconds", scale_in_threshold_seconds_);
+    Put(writer, "scale_step_tib", scale_step_tib_);
+    Put(writer, "scale_out_delay_seconds", scale_out_delay_seconds_);
+}
+
 bool OptimizerConfig::FromRapidValue(const rapidjson::Value &rapid_value) {
     KVCM_JSON_GET_MACRO(rapid_value, "trace_file_path", trace_file_path_);
     KVCM_JSON_GET_MACRO(rapid_value, "output_result_path", output_result_path_);
@@ -84,6 +123,12 @@ bool OptimizerConfig::FromRapidValue(const rapidjson::Value &rapid_value) {
             return false;
         }
     }
+    cache_autoscaling_config_ = OptCacheAutoscalingConfig();
+    if (rapid_value.HasMember("cache_autoscaling")) {
+        if (!cache_autoscaling_config_.FromRapidValue(rapid_value["cache_autoscaling"])) {
+            return false;
+        }
+    }
     KVCM_JSON_GET_MACRO(rapid_value, "instance_groups", instance_groups_);
     return true;
 };
@@ -95,6 +140,9 @@ void OptimizerConfig::ToRapidWriter(rapidjson::Writer<rapidjson::StringBuffer> &
     Put(writer, "trace_replay", trace_replay_config_);
     if (mamba_state_config_.enabled()) {
         Put(writer, "mamba_state", mamba_state_config_);
+    }
+    if (cache_autoscaling_config_.enabled()) {
+        Put(writer, "cache_autoscaling", cache_autoscaling_config_);
     }
     Put(writer, "instance_groups", instance_groups_);
 }

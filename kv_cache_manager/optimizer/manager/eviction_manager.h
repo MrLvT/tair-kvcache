@@ -84,6 +84,7 @@ public:
 
     // Instance per-tier 用量明细
     std::vector<size_t> GetCurrentInstanceUsagePerTier(const std::string &instance_id) const;
+    std::optional<std::pair<int64_t, int64_t>> GetInstanceAccessTimeRange(const std::string &instance_id) const;
 
     // 级联降级：将 blocks 复制到 tier_{next_idx} 的 location_map + LRU 队列
     void DemoteToNextTier(const std::string &instance_id,

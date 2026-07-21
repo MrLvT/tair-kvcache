@@ -10,6 +10,7 @@
 #include "kv_cache_manager/optimizer/analysis/stats_collector.h"
 #include "kv_cache_manager/optimizer/config/optimizer_config.h"
 #include "kv_cache_manager/optimizer/manager/eviction_manager.h"
+#include "kv_cache_manager/optimizer/manager/cache_capacity_autoscaler.h"
 #include "kv_cache_manager/optimizer/manager/indexer_manager.h"
 #include "kv_cache_manager/optimizer/trace_loader/optimizer_schema_trace.h"
 
@@ -21,13 +22,26 @@ public:
                              const std::shared_ptr<StatsCollector> &stats_collector,
                              const std::unordered_map<std::string, bool> &instance_group_ttl_disabled,
                              const std::unordered_map<std::string, bool> &instance_ttl_refresh_on_read,
-                             const OptMambaStateConfig &mamba_state_config = OptMambaStateConfig())
+                             const OptMambaStateConfig &mamba_state_config = OptMambaStateConfig(),
+                             CacheRetentionTracker *cache_retention_tracker = nullptr,
+                             const OptCacheAutoscalingConfig &cache_autoscaling_config = OptCacheAutoscalingConfig(),
+                             const std::string &autoscaling_group_name = "",
+                             int64_t autoscaling_baseline_capacity_bytes = 0,
+                             const std::string &lru_snapshot_instance_id = "")
         : indexer_manager_(indexer_manager)
         , eviction_manager_(eviction_manager)
         , stats_collector_(stats_collector)
         , instance_group_ttl_disabled_(instance_group_ttl_disabled)
         , instance_ttl_refresh_on_read_(instance_ttl_refresh_on_read)
-        , mamba_state_config_(mamba_state_config){};
+        , mamba_state_config_(mamba_state_config)
+        , cache_retention_tracker_(cache_retention_tracker)
+        , autoscaling_group_name_(autoscaling_group_name)
+        , lru_snapshot_instance_id_(lru_snapshot_instance_id) {
+        if (cache_autoscaling_config.enabled()) {
+            cache_capacity_autoscaler_ = std::make_unique<CacheCapacityAutoscaler>(
+                cache_autoscaling_config, autoscaling_group_name, autoscaling_baseline_capacity_bytes);
+        }
+    };
     ~OptimizerRunner() = default;
     void Run(OptimizerConfig &config);
     void RunTraces(const std::vector<std::shared_ptr<OptimizerSchemaTrace>> &traces);
@@ -42,6 +56,7 @@ public:
                                     const std::vector<size_t> &materialized_indices);
     void ClearMambaState(const std::string &instance_id);
     void ClearAllMambaStates();
+    void ExportAutoscalingEvents(const std::string &output_result_path) const;
 
 private:
     struct PrefixSignature {
@@ -101,6 +116,7 @@ private:
     void FlushPendingWritesThrough(int64_t timestamp_ns);
     void FlushAllPendingWrites();
     void RunPendingWrite(const WriteCacheSchemaTrace &trace);
+    void AdvanceAutoscalingThrough(int64_t timestamp_ns);
     std::vector<PrefixSignature> BuildPrefixSignatures(const std::vector<int64_t> &keys) const;
     std::vector<size_t> MambaCheckpointIndices(size_t key_count) const;
     MambaStateReadStats
@@ -133,5 +149,11 @@ private:
     int64_t write_delay_ns_ = 1;
     uint64_t next_pending_write_sequence_ = 0;
     std::priority_queue<PendingWrite, std::vector<PendingWrite>, PendingWriteCompare> pending_writes_;
+    CacheRetentionTracker *cache_retention_tracker_ = nullptr;
+    std::string autoscaling_group_name_;
+    std::unique_ptr<CacheCapacityAutoscaler> cache_capacity_autoscaler_;
+    std::string lru_snapshot_instance_id_;
+    std::optional<int64_t> next_lru_snapshot_boundary_ns_;
+    std::optional<int64_t> last_replay_timestamp_ns_;
 };
 } // namespace kv_cache_manager

@@ -39,7 +39,7 @@ private:
 
     std::vector<BlockEntry *> SampleAndPickLru(size_t sample_size, size_t batch);
     // 删除指定 block（O(1）swap-pop）
-    void RemoveBlock(BlockEntry *block);
+    bool RemoveBlock(BlockEntry *block) override;
 
     inline size_t FastRand(size_t mod);
 };

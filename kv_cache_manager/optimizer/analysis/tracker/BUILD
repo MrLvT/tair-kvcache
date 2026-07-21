@@ -4,6 +4,7 @@ cc_library(
     name = "tracker",
     srcs = [
         "block_lifecycle_tracker.cc",
+        "cache_read_interval_tracker.cc",
         "cache_retention_tracker.cc",
         "capacity_miss_tracker.cc",
         "hit_rate_tracker.cc",
@@ -11,6 +12,7 @@ cc_library(
     ],
     hdrs = [
         "block_lifecycle_tracker.h",
+        "cache_read_interval_tracker.h",
         "cache_retention_tracker.h",
         "capacity_miss_tracker.h",
         "hit_rate_tracker.h",

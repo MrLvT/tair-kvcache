@@ -9,6 +9,7 @@ cc_library(
         "eviction_manager.cc",
         "optimizer_loader.cc",
         "indexer_manager.cc",
+        "cache_capacity_autoscaler.cc",
     ],
     hdrs = [
         "optimizer_manager.h",
@@ -17,6 +18,7 @@ cc_library(
         "eviction_manager.h",
         "optimizer_loader.h",
         "indexer_manager.h",
+        "cache_capacity_autoscaler.h",
     ],
     deps = [
         "//kv_cache_manager/optimizer/eviction_policy",

@@ -31,6 +31,31 @@ int64_t LruEvictionPolicy::GetShardTailTime(int32_t shard_index) const {
     return lru_node->payload_ ? GetTierAccessTime(lru_node->payload_) : INT64_MAX;
 }
 
+std::optional<std::pair<int64_t, int64_t>> LruEvictionPolicy::AccessTimeRange() const {
+    std::optional<int64_t> oldest;
+    std::optional<int64_t> newest;
+    for (const auto &shard_list : shard_lists_) {
+        const auto *head = static_cast<const LRUListNode *>(shard_list.getHead());
+        const auto *tail = static_cast<const LRUListNode *>(shard_list.getTail());
+        if (head != nullptr && head->payload_ != nullptr) {
+            const int64_t timestamp = GetTierAccessTime(head->payload_);
+            if (timestamp != INT64_MAX) {
+                newest = newest.has_value() ? std::max(*newest, timestamp) : timestamp;
+            }
+        }
+        if (tail != nullptr && tail->payload_ != nullptr) {
+            const int64_t timestamp = GetTierAccessTime(tail->payload_);
+            if (timestamp != INT64_MAX) {
+                oldest = oldest.has_value() ? std::min(*oldest, timestamp) : timestamp;
+            }
+        }
+    }
+    if (!oldest.has_value() || !newest.has_value()) {
+        return std::nullopt;
+    }
+    return std::make_pair(*oldest, *newest);
+}
+
 void LruEvictionPolicy::OnBlockWritten(BlockEntry *block) {
     if (block == nullptr) {
         return;

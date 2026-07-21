@@ -51,8 +51,8 @@ bazel run //kv_cache_manager/optimizer:hierarchical_replay_main -- /path/to/hier
 - `output_result_path/hierarchical_capacity_miss.csv`：仅在 capacity miss metric 开启时输出。包含请求级 `ActualPrefixTokens`、`GlobalPrefixTokens`、`CounterfactualPrefixTokens`、Routing/Capacity/Cold miss tokens、累计 counter，以及完整五分钟窗口的 `CapacityMissTps5m` / `CapacityMissRatio5m`。窗口未覆盖满五分钟时对应字段为空。
 - `output_result_path/infer/`：推理侧独立统计，用于分析每个推理实例本地缓存；开启 `enable_lifecycle_tracking` 后也会输出 `*_lifecycle.csv`。
 - `storage_pool.output_result_path`：storage pool 侧独立统计，用于分析 KVCM/storage pool 池化层；开启 `enable_lifecycle_tracking` 后也会输出 `*_lifecycle.csv`。
-- 开启 retention 后，engine 和 pool 目录分别输出 `<instance>_cache_retention_by_minute.csv` 与 `service_<service>_cache_retention_by_minute.csv`。service 分位数直接由所有 instance 的原始淘汰样本合并计算，不是 instance 分位数的平均。
-- retention CSV 包含创建到淘汰、最近有效 read hit 到淘汰的 average/p50/p75/p99。write touch 保持现有仿真行为但不更新“最近有效 read hit”；从未 read-hit 的淘汰 block 只进入 lifetime，并计入 `NeverReusedEvictedBlocks`；trace 结束仍存活的 block 不进入时长分布。
+- 开启 retention 后，engine 和 pool 目录分别输出 `<instance>_cache_retention_by_minute.csv` 与 `service_<service>_cache_retention_by_minute.csv`。CSV 保留 average/p10/p50/p75/p95/p99；service 分位数直接由所有 instance 的原始淘汰样本合并计算，不是 instance 分位数的平均。
+- retention CSV 包含创建到淘汰、最近有效 read hit 到淘汰的 average/p10/p50/p75/p95/p99。write touch 保持现有仿真行为但不更新“最近有效 read hit”；从未 read-hit 的淘汰 block 只进入 lifetime，并计入 `NeverReusedEvictedBlocks`；trace 结束仍存活的 block 不进入时长分布。
 
 配置骨架：
 

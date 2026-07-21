@@ -20,6 +20,26 @@ cc_test(
 )
 
 cc_test(
+    name = "CacheCapacityAutoscalerTest",
+    srcs = ["cache_capacity_autoscaler_test.cc"],
+    deps = [
+        "//kv_cache_manager/common:unittest",
+        "//kv_cache_manager/optimizer/config",
+        "//kv_cache_manager/optimizer/manager",
+    ],
+)
+
+cc_test(
+    name = "CacheReadIntervalTrackerTest",
+    srcs = ["cache_read_interval_tracker_test.cc"],
+    deps = [
+        "//kv_cache_manager/common:unittest",
+        "//kv_cache_manager/optimizer/analysis/tracker",
+        "//kv_cache_manager/optimizer/config",
+    ],
+)
+
+cc_test(
     name = "LruEvictionPolicyTest",
     srcs = [
         "lru_eviction_policy_test.cc",

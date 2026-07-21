@@ -122,15 +122,30 @@ PYBIND11_MODULE(kvcm_py_optimizer, module) {
 
     // 绑定OptimizerManager类
     py::class_<kvcm::OptimizerManager>(module, "OptimizerManager")
-        .def(py::init<const kvcm::OptimizerConfig &, bool, bool, kvcm::HitRatePerspective, bool>(),
+        .def(py::init([](const kvcm::OptimizerConfig &config,
+                         bool enable_lifecycle_tracking,
+                         bool enable_template_analysis,
+                         kvcm::HitRatePerspective hit_rate_perspective,
+                         bool enable_cache_retention_tracking,
+                         bool enable_cache_read_interval_tracking) {
+                 return std::make_unique<kvcm::OptimizerManager>(config,
+                                                                 enable_lifecycle_tracking,
+                                                                 enable_template_analysis,
+                                                                 hit_rate_perspective,
+                                                                 enable_cache_retention_tracking,
+                                                                 std::unordered_map<std::string, std::string>{},
+                                                                 enable_cache_read_interval_tracking);
+             }),
              py::arg("config"),
              py::arg("enable_lifecycle_tracking") = false,
              py::arg("enable_template_analysis") = false,
              py::arg("hit_rate_perspective") = kvcm::HitRatePerspective::KVCM_L3,
              py::arg("enable_cache_retention_tracking") = false,
+             py::arg("enable_cache_read_interval_tracking") = false,
              "Initialize OptimizerManager. Set enable_lifecycle_tracking=True to track block lifecycle (uses ~10GB "
              "more memory). Set enable_template_analysis=True to enable template prefix analysis (slower replay). "
-             "Set enable_cache_retention_tracking=True to export physical-eviction retention summaries")
+             "Set enable_cache_retention_tracking=True to export physical-eviction retention summaries. "
+             "Set enable_cache_read_interval_tracking=True to export consecutive read-hit interval summaries")
         .def("Init", &kvcm::OptimizerManager::Init, py::call_guard<py::gil_scoped_release>())
         .def("DirectRun", &kvcm::OptimizerManager::DirectRun, py::call_guard<py::gil_scoped_release>())
         .def("AnalyzeResults",

@@ -165,12 +165,19 @@ void OptimizerRunner::RunTraces(const std::vector<std::shared_ptr<OptimizerSchem
         RunTrace(trace);
     }
     FlushAllPendingWrites();
+    if (last_replay_timestamp_ns_.has_value()) {
+        const int64_t final_boundary =
+            (*last_replay_timestamp_ns_ / CacheRetentionTracker::kMinuteNs + 1) *
+            CacheRetentionTracker::kMinuteNs;
+        AdvanceAutoscalingThrough(final_boundary);
+    }
 }
 
 void OptimizerRunner::RunTrace(std::shared_ptr<OptimizerSchemaTrace> trace) {
     if (!trace) {
         return;
     }
+    AdvanceAutoscalingThrough(trace->timestamp_ns());
 
     if (auto request_trace = std::dynamic_pointer_cast<RequestSchemaTrace>(trace)) {
         HandleRequest(*request_trace);
@@ -234,8 +241,61 @@ void OptimizerRunner::FlushAllPendingWrites() {
 }
 
 void OptimizerRunner::RunPendingWrite(const WriteCacheSchemaTrace &trace) {
+    AdvanceAutoscalingThrough(trace.timestamp_ns());
     HandleWriteCache(trace);
     stats_collector_->UpdateTimestamp(trace.instance_id(), trace.timestamp_ns());
+}
+
+void OptimizerRunner::AdvanceAutoscalingThrough(int64_t timestamp_ns) {
+    if (!cache_capacity_autoscaler_ || cache_retention_tracker_ == nullptr) {
+        return;
+    }
+    auto apply = [this](int64_t delta_bytes, int64_t effective_time_ns) {
+        const auto result = indexer_manager_->AdjustGlobalPooledQuota(
+            autoscaling_group_name_,
+            delta_bytes,
+            effective_time_ns,
+            cache_capacity_autoscaler_->baseline_capacity_bytes());
+        return CacheCapacityAutoscaler::ApplyResult{
+            result.applied, result.capacity_before_bytes, result.capacity_after_bytes, result.reason};
+    };
+
+    last_replay_timestamp_ns_ = !last_replay_timestamp_ns_.has_value()
+                                    ? timestamp_ns
+                                    : std::max(*last_replay_timestamp_ns_, timestamp_ns);
+    if (!next_lru_snapshot_boundary_ns_.has_value()) {
+        next_lru_snapshot_boundary_ns_ =
+            (timestamp_ns / CacheRetentionTracker::kMinuteNs + 1) * CacheRetentionTracker::kMinuteNs;
+    }
+    while (*next_lru_snapshot_boundary_ns_ <= timestamp_ns) {
+        const int64_t boundary_ns = *next_lru_snapshot_boundary_ns_;
+        std::optional<int64_t> span_ns;
+        const auto range = indexer_manager_->GetInstanceAccessTimeRange(lru_snapshot_instance_id_);
+        if (range.has_value() && range->second >= range->first) {
+            span_ns = range->second - range->first;
+        }
+        cache_retention_tracker_->OnLruTimeSpanSnapshot(
+            lru_snapshot_instance_id_, boundary_ns - CacheRetentionTracker::kMinuteNs, span_ns);
+
+        const auto rows =
+            cache_retention_tracker_->TakeClosedServiceRowsThrough(autoscaling_group_name_, boundary_ns);
+        for (const auto &row : rows) {
+            const auto due = cache_capacity_autoscaler_->pending_effective_time_ns();
+            if (due.has_value() && *due < boundary_ns) {
+                cache_capacity_autoscaler_->ApplyDueThrough(boundary_ns - 1, apply);
+            }
+            cache_capacity_autoscaler_->OnMetric(row, boundary_ns);
+            cache_capacity_autoscaler_->ApplyDueThrough(boundary_ns, apply);
+        }
+        *next_lru_snapshot_boundary_ns_ += CacheRetentionTracker::kMinuteNs;
+    }
+    cache_capacity_autoscaler_->ApplyDueThrough(timestamp_ns, apply);
+}
+
+void OptimizerRunner::ExportAutoscalingEvents(const std::string &output_result_path) const {
+    if (cache_capacity_autoscaler_) {
+        cache_capacity_autoscaler_->ExportCsv(output_result_path);
+    }
 }
 
 ReadRecord OptimizerRunner::SubmitReadRecord(const std::string &instance_id,

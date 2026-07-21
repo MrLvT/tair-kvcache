@@ -1,6 +1,7 @@
 #include "kv_cache_manager/optimizer/manager/indexer_manager.h"
 
 #include <algorithm>
+#include <limits>
 #include <unordered_set>
 #include <utility>
 
@@ -152,6 +153,52 @@ void OptIndexerManager::CleanEvictedBlocks(const EvictedBlocks &evicted_blocks,
 
 size_t OptIndexerManager::GetCurrentInstanceUsage(const std::string &instance_id) const {
     return eviction_manager_->GetCurrentInstanceUsage(instance_id);
+}
+
+std::optional<std::pair<int64_t, int64_t>>
+OptIndexerManager::GetInstanceAccessTimeRange(const std::string &instance_id) const {
+    return eviction_manager_->GetInstanceAccessTimeRange(instance_id);
+}
+
+OptIndexerManager::QuotaAdjustmentResult
+OptIndexerManager::AdjustGlobalPooledQuota(const std::string &group_name,
+                                           int64_t delta_bytes,
+                                           int64_t effective_time_ns,
+                                           int64_t minimum_capacity_bytes) {
+    QuotaAdjustmentResult result;
+    auto group_it = instance_group_configs_.find(group_name);
+    if (group_it == instance_group_configs_.end()) {
+        result.reason = "group_not_found";
+        return result;
+    }
+    auto &group = group_it->second;
+    result.capacity_before_bytes = group.quota_capacity();
+    result.capacity_after_bytes = result.capacity_before_bytes;
+    if (group.hierarchical_eviction_enabled()) {
+        result.reason = "hierarchical_group_not_supported";
+        return result;
+    }
+    if (delta_bytes > 0 &&
+        result.capacity_before_bytes > std::numeric_limits<int64_t>::max() - delta_bytes) {
+        result.reason = "capacity_overflow";
+        return result;
+    }
+    const int64_t next_capacity = result.capacity_before_bytes + delta_bytes;
+    if (next_capacity < minimum_capacity_bytes) {
+        result.reason = "baseline_capacity_floor";
+        return result;
+    }
+    group.set_quota_capacity(next_capacity);
+    result.capacity_after_bytes = next_capacity;
+    result.applied = true;
+    result.reason = delta_bytes > 0 ? "scale_out_applied" : "scale_in_applied";
+
+    if (delta_bytes < 0 && !group.instances().empty()) {
+        auto eviction = eviction_manager_->EvictByMode(
+            group.instances().front().instance_id(), group, effective_time_ns);
+        CleanEvictedBlocks(eviction.evicted_blocks, effective_time_ns);
+    }
+    return result;
 }
 
 bool OptIndexerManager::ClearCache(const std::string &instance_id) {

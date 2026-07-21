@@ -27,12 +27,33 @@ py_library(
     name = "plot_lib",
     srcs = [
         "plot/__init__.py",
+        "plot/cache_read_interval_plot.py",
+        "plot/cache_read_interval_distribution_plot.py",
+        "plot/cache_read_interval_cdf_plot.py",
         "plot/hit_rate_plot.py",
         "plot/lifecycle_plot.py",
         "plot/cache_retention_plot.py",
         "plot/radix_tree_plot.py",
     ],
     imports = ["."],
+)
+
+py_binary(
+    name = "cache_read_interval_plot",
+    srcs = ["plot/cache_read_interval_plot.py"],
+    main = "plot/cache_read_interval_plot.py",
+)
+
+py_binary(
+    name = "cache_read_interval_distribution_plot",
+    srcs = ["plot/cache_read_interval_distribution_plot.py"],
+    main = "plot/cache_read_interval_distribution_plot.py",
+)
+
+py_binary(
+    name = "cache_read_interval_cdf_plot",
+    srcs = ["plot/cache_read_interval_cdf_plot.py"],
+    main = "plot/cache_read_interval_cdf_plot.py",
 )
 
 py_library(

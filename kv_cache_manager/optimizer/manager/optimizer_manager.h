@@ -26,7 +26,8 @@ public:
                      bool enable_template_analysis = false,
                      HitRatePerspective hit_rate_perspective = HitRatePerspective::KVCM_L3,
                      bool enable_cache_retention_tracking = false,
-                     std::unordered_map<std::string, std::string> instance_to_service = {});
+                     std::unordered_map<std::string, std::string> instance_to_service = {},
+                     bool enable_cache_read_interval_tracking = false);
     ~OptimizerManager() = default;
     bool Init();
 
@@ -106,10 +107,12 @@ private:
     // 快速访问指针，所有权归 StatsCollector
     HitRateTracker *hit_rate_tracker_ = nullptr;
     TemplatePrefixTracker *template_prefix_tracker_ = nullptr;
+    CacheRetentionTracker *cache_retention_tracker_ = nullptr;
 
     bool enable_lifecycle_tracking_ = false;
     bool enable_template_analysis_ = false;
     bool enable_cache_retention_tracking_ = false;
+    bool enable_cache_read_interval_tracking_ = false;
     std::unordered_map<std::string, std::string> instance_to_service_;
     HitRatePerspective hit_rate_perspective_ = HitRatePerspective::KVCM_L3;
 };

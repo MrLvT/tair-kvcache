@@ -475,4 +475,13 @@ std::vector<size_t> OptEvictionManager::GetCurrentInstanceUsagePerTier(const std
     return result;
 }
 
+std::optional<std::pair<int64_t, int64_t>>
+OptEvictionManager::GetInstanceAccessTimeRange(const std::string &instance_id) const {
+    auto it = instance_tiered_policy_map_.find(instance_id);
+    if (it == instance_tiered_policy_map_.end() || it->second.policies.size() != 1) {
+        return std::nullopt;
+    }
+    return it->second.shared_policy()->AccessTimeRange();
+}
+
 } // namespace kv_cache_manager

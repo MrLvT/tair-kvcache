@@ -37,10 +37,32 @@ TEST_F(CacheRetentionTrackerTest, TracksPhysicalLifetimeAndLastReadOnly) {
     EXPECT_EQ(rows[1].never_reused_evicted_blocks, 1);
     ASSERT_TRUE(rows[1].lifetime_average_ns.has_value());
     EXPECT_DOUBLE_EQ(*rows[1].lifetime_average_ns, 60.0 * 1000 * 1000 * 1000);
+    ASSERT_TRUE(rows[1].lifetime_p10_ns.has_value());
+    EXPECT_DOUBLE_EQ(*rows[1].lifetime_p10_ns, 56.0 * 1000 * 1000 * 1000);
     ASSERT_TRUE(rows[1].lifetime_p50_ns.has_value());
     EXPECT_DOUBLE_EQ(*rows[1].lifetime_p50_ns, 60.0 * 1000 * 1000 * 1000);
+    ASSERT_TRUE(rows[1].lifetime_p95_ns.has_value());
+    EXPECT_DOUBLE_EQ(*rows[1].lifetime_p95_ns, 64.5 * 1000 * 1000 * 1000);
     ASSERT_TRUE(rows[1].idle_average_ns.has_value());
     EXPECT_DOUBLE_EQ(*rows[1].idle_average_ns, 45.0 * 1000 * 1000 * 1000);
+    ASSERT_TRUE(rows[1].idle_p10_ns.has_value());
+    EXPECT_DOUBLE_EQ(*rows[1].idle_p10_ns, 45.0 * 1000 * 1000 * 1000);
+    ASSERT_TRUE(rows[1].idle_p95_ns.has_value());
+    EXPECT_DOUBLE_EQ(*rows[1].idle_p95_ns, 45.0 * 1000 * 1000 * 1000);
+    ASSERT_TRUE(rows[1].all_block_last_touch_age_average_ns.has_value());
+    EXPECT_DOUBLE_EQ(*rows[1].all_block_last_touch_age_average_ns, 50.0 * 1000 * 1000 * 1000);
+    ASSERT_TRUE(rows[1].all_block_last_touch_age_p10_ns.has_value());
+    EXPECT_DOUBLE_EQ(*rows[1].all_block_last_touch_age_p10_ns, 46.0 * 1000 * 1000 * 1000);
+    ASSERT_TRUE(rows[1].all_block_last_touch_age_p95_ns.has_value());
+    EXPECT_DOUBLE_EQ(*rows[1].all_block_last_touch_age_p95_ns, 54.5 * 1000 * 1000 * 1000);
+    EXPECT_EQ(rows[1].distinct_eviction_timestamps, 1);
+    EXPECT_EQ(rows[1].distinct_last_read_timestamps, 1);
+    EXPECT_EQ(rows[1].largest_last_read_cohort_blocks, 1);
+    ASSERT_TRUE(rows[1].largest_last_read_cohort_fraction.has_value());
+    EXPECT_DOUBLE_EQ(*rows[1].largest_last_read_cohort_fraction, 1.0);
+    EXPECT_EQ(rows[1].reuse_eviction_batches, 1);
+    ASSERT_TRUE(rows[1].batch_idle_spread_p95_ns.has_value());
+    EXPECT_DOUBLE_EQ(*rows[1].batch_idle_spread_p95_ns, 0.0);
     EXPECT_EQ(rows[2].evicted_blocks, 0);
     EXPECT_EQ(rows[3].evicted_blocks, 0);
 }
@@ -75,4 +97,35 @@ TEST_F(CacheRetentionTrackerTest, AggregatesRawSamplesByService) {
     EXPECT_DOUBLE_EQ(*rows[1].lifetime_p50_ns, 50.0 * 1000 * 1000 * 1000);
     EXPECT_TRUE(std::filesystem::exists(output + "/service_service_x_cache_retention_by_minute.csv"));
     std::filesystem::remove_all(output);
+}
+
+TEST_F(CacheRetentionTrackerTest, DeliversOnlyFullyClosedServiceMinutesOnce) {
+    CacheRetentionTracker tracker(
+        std::unordered_map<std::string, std::string>{{"instance_a", "service_x"}});
+    BlockEntry block;
+    block.key = 7;
+    tracker.OnBlockBirth("instance_a", &block, 0);
+    tracker.OnBlockReadHit("instance_a", &block, 10LL * 1000 * 1000 * 1000);
+    tracker.OnBlockRetentionEviction("instance_a", &block, 50LL * 1000 * 1000 * 1000);
+    tracker.OnLruTimeSpanSnapshot("instance_a", 0, 35LL * 1000 * 1000 * 1000);
+
+    EXPECT_TRUE(tracker.TakeClosedServiceRowsThrough(
+                           "service_x", 59LL * 1000 * 1000 * 1000)
+                    .empty());
+    const auto rows = tracker.TakeClosedServiceRowsThrough(
+        "service_x", 60LL * 1000 * 1000 * 1000);
+    ASSERT_EQ(rows.size(), 1);
+    ASSERT_TRUE(rows.front().idle_p10_ns.has_value());
+    EXPECT_DOUBLE_EQ(*rows.front().idle_p10_ns, 40.0 * 1000 * 1000 * 1000);
+    ASSERT_TRUE(rows.front().lru_time_span_ns.has_value());
+    EXPECT_DOUBLE_EQ(*rows.front().lru_time_span_ns, 35.0 * 1000 * 1000 * 1000);
+    EXPECT_TRUE(tracker.TakeClosedServiceRowsThrough(
+                           "service_x", 60LL * 1000 * 1000 * 1000)
+                    .empty());
+    tracker.OnLruTimeSpanSnapshot("instance_a", 60LL * 1000 * 1000 * 1000, 45LL * 1000 * 1000 * 1000);
+    const auto second = tracker.TakeClosedServiceRowsThrough(
+        "service_x", 120LL * 1000 * 1000 * 1000);
+    ASSERT_EQ(second.size(), 1);
+    ASSERT_TRUE(second.front().lru_time_span_ns.has_value());
+    EXPECT_DOUBLE_EQ(*second.front().lru_time_span_ns, 45.0 * 1000 * 1000 * 1000);
 }

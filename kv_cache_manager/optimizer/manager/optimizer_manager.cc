@@ -9,6 +9,7 @@
 #include "kv_cache_manager/common/logger.h"
 #include "kv_cache_manager/meta/cache_location.h"
 #include "kv_cache_manager/optimizer/analysis/tracker/block_lifecycle_tracker.h"
+#include "kv_cache_manager/optimizer/analysis/tracker/cache_read_interval_tracker.h"
 #include "kv_cache_manager/optimizer/analysis/tracker/cache_retention_tracker.h"
 #include "kv_cache_manager/optimizer/config/tier_config.h"
 #include "kv_cache_manager/optimizer/eviction_policy/policy_factory.h"
@@ -30,13 +31,19 @@ OptimizerManager::OptimizerManager(const OptimizerConfig &config,
                                    bool enable_template_analysis,
                                    HitRatePerspective hit_rate_perspective,
                                    bool enable_cache_retention_tracking,
-                                   std::unordered_map<std::string, std::string> instance_to_service)
+                                   std::unordered_map<std::string, std::string> instance_to_service,
+                                   bool enable_cache_read_interval_tracking)
     : config_(config)
     , enable_lifecycle_tracking_(enable_lifecycle_tracking)
     , enable_template_analysis_(enable_template_analysis)
     , enable_cache_retention_tracking_(enable_cache_retention_tracking)
+    , enable_cache_read_interval_tracking_(enable_cache_read_interval_tracking)
     , instance_to_service_(std::move(instance_to_service))
-    , hit_rate_perspective_(hit_rate_perspective) {}
+    , hit_rate_perspective_(hit_rate_perspective) {
+    if (config_.cache_autoscaling_config().enabled()) {
+        enable_cache_retention_tracking_ = true;
+    }
+}
 
 bool OptimizerManager::Init() {
     eviction_manager_.reset(new OptEvictionManager());
@@ -70,8 +77,31 @@ bool OptimizerManager::Init() {
     }
 
     if (enable_cache_retention_tracking_) {
-        stats_collector_->EmplaceTracker<CacheRetentionTracker>(instance_to_service_);
+        if (config_.cache_autoscaling_config().enabled()) {
+            if (config_.instance_groups().size() != 1 ||
+                config_.instance_groups().front().instances().size() != 1 ||
+                config_.instance_groups().front().hierarchical_eviction_enabled()) {
+                KVCM_LOG_ERROR("cache autoscaling only supports one global pooled, non-hierarchical group with one "
+                               "synthetic instance");
+                return false;
+            }
+            const auto &autoscaling_group = config_.instance_groups().front();
+            if (autoscaling_group.quota_capacity() <= 0) {
+                KVCM_LOG_ERROR("cache autoscaling requires positive quota_capacity");
+                return false;
+            }
+            for (const auto &instance : autoscaling_group.instances()) {
+                instance_to_service_[instance.instance_id()] = autoscaling_group.group_name();
+            }
+        }
+        cache_retention_tracker_ =
+            stats_collector_->EmplaceTracker<CacheRetentionTracker>(instance_to_service_);
         KVCM_LOG_INFO("Cache retention tracking enabled");
+    }
+
+    if (enable_cache_read_interval_tracking_) {
+        stats_collector_->EmplaceTracker<CacheReadIntervalTracker>();
+        KVCM_LOG_INFO("Cache read interval tracking enabled");
     }
 
     size_t total_instances = 0;
@@ -172,12 +202,25 @@ bool OptimizerManager::Init() {
     indexer_manager_->RegisterInstanceGroups(instance_group_configs_);
     indexer_manager_->RegisterInstances(instance_configs_);
 
+    std::string autoscaling_group_name;
+    int64_t autoscaling_baseline_capacity_bytes = 0;
+    std::string lru_snapshot_instance_id;
+    if (config_.cache_autoscaling_config().enabled()) {
+        autoscaling_group_name = config_.instance_groups().front().group_name();
+        autoscaling_baseline_capacity_bytes = config_.instance_groups().front().quota_capacity();
+        lru_snapshot_instance_id = config_.instance_groups().front().instances().front().instance_id();
+    }
     optimizer_runner_.reset(new OptimizerRunner(indexer_manager_,
                                                 eviction_manager_,
                                                 stats_collector_,
                                                 instance_group_ttl_disabled_,
                                                 instance_ttl_refresh_on_read_,
-                                                config_.mamba_state_config()));
+                                                config_.mamba_state_config(),
+                                                cache_retention_tracker_,
+                                                config_.cache_autoscaling_config(),
+                                                autoscaling_group_name,
+                                                autoscaling_baseline_capacity_bytes,
+                                                lru_snapshot_instance_id));
     return true;
 }
 
@@ -373,6 +416,10 @@ void OptimizerManager::AnalyzeResults() {
 
         stats_collector_->ExportAll(instance_id, config_);
         stats_collector_->ResetAll(instance_id);
+    }
+
+    if (optimizer_runner_) {
+        optimizer_runner_->ExportAutoscalingEvents(config_.output_result_path());
     }
 
     KVCM_LOG_INFO("Analysis complete and memory released (all data persisted to %s)",
